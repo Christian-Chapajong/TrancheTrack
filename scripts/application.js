@@ -22,29 +22,77 @@ function toggleTheme() {
 initTheme();
 
 // ============================================================
+// Firebase / Firestore init
+// ============================================================
+let db = null;
+let useFirestore = false;
+
+try {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+  useFirestore = true;
+} catch (e) {
+  console.warn('Firebase init failed, using localStorage fallback:', e.message);
+}
+
+// ============================================================
 // State
 // ============================================================
-let tranches = loadTranches();
+let tranches = [];
 let currentPrices = {};
 let spyCurrentPrice = null;
 let lastRefreshTime = null;
-let nextId = tranches.reduce((max, t) => Math.max(max, t.id || 0), 0) + 1;
+let nextId = 1;
 
 // ============================================================
-// localStorage persistence
+// Data persistence — Firestore with localStorage fallback
 // ============================================================
-function loadTranches() {
+async function loadTranches() {
+  if (useFirestore) {
+    try {
+      const snapshot = await db.collection('tranches').get();
+      if (snapshot.empty) {
+        // Seed Firestore with defaults on first run
+        const batch = db.batch();
+        for (const t of DEFAULT_TRANCHES) {
+          const ref = db.collection('tranches').doc();
+          batch.set(ref, {
+            ticker: t.ticker,
+            date: t.date,
+            purchasePrice: t.purchasePrice,
+            spyAtPurchase: t.spyAtPurchase
+          });
+        }
+        await batch.commit();
+        // Re-read to get Firestore doc IDs
+        const seeded = await db.collection('tranches').get();
+        tranches = seeded.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      } else {
+        tranches = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      }
+      nextId = tranches.length + 1;
+      return tranches;
+    } catch (e) {
+      console.warn('Firestore read failed, falling back to localStorage:', e.message);
+      showError('Firestore unavailable — using local data. ' + e.message);
+      useFirestore = false;
+    }
+  }
+
+  // localStorage fallback
   const saved = localStorage.getItem('portfolio_tranches');
   if (saved) {
-    try { return JSON.parse(saved); } catch (e) { /* fall through */ }
+    try { tranches = JSON.parse(saved); } catch (e) { tranches = []; }
   }
-  // First run — seed from defaults and persist
-  const defaults = JSON.parse(JSON.stringify(DEFAULT_TRANCHES));
-  localStorage.setItem('portfolio_tranches', JSON.stringify(defaults));
-  return defaults;
+  if (tranches.length === 0) {
+    tranches = JSON.parse(JSON.stringify(DEFAULT_TRANCHES));
+    localStorage.setItem('portfolio_tranches', JSON.stringify(tranches));
+  }
+  nextId = tranches.reduce((max, t) => Math.max(max, t.id || 0), 0) + 1;
+  return tranches;
 }
 
-function saveTranches() {
+function saveToLocalStorage() {
   localStorage.setItem('portfolio_tranches', JSON.stringify(tranches));
 }
 
@@ -224,18 +272,18 @@ function renderTable() {
       html += `<tr class="tranche-row">
         <td>${t.ticker}</td>
         <td>${fmtDate(t.date)}</td>
-        <td class="num"><input class="inline-input" type="number" step="0.01" value="${t.purchasePrice}" onchange="updateTranche(${t.id},'purchasePrice',this.value)"></td>
+        <td class="num"><input class="inline-input" type="number" step="0.01" value="${t.purchasePrice}" onchange="updateTranche('${t.id}','purchasePrice',this.value)"></td>
         <td class="num">${c.currentPrice != null ? '$' + fmt(c.currentPrice) : '—'}</td>
         <td class="num">${c.days}</td>
         <td class="num ${colorClass(c.pnl)}">${c.pnl != null ? '$' + fmt(c.pnl) : '—'}</td>
         <td class="num ${colorClass(c.pctPnl)}">${fmtPct(c.pctPnl)}</td>
         <td class="num ${colorClass(c.annPctPnl)}">${fmtPct(c.annPctPnl)}</td>
-        <td class="num"><input class="inline-input" type="number" step="0.01" value="${t.spyAtPurchase}" onchange="updateTranche(${t.id},'spyAtPurchase',this.value)"></td>
+        <td class="num"><input class="inline-input" type="number" step="0.01" value="${t.spyAtPurchase}" onchange="updateTranche('${t.id}','spyAtPurchase',this.value)"></td>
         <td class="num">${c.spyNow != null ? '$' + fmt(c.spyNow) : '—'}</td>
         <td class="num ${colorClass(c.spyPctPnl)}">${fmtPct(c.spyPctPnl)}</td>
         <td class="num ${colorClass(c.spyAnnPctPnl)}">${fmtPct(c.spyAnnPctPnl)}</td>
         <td class="num ${colorClass(c.alpha)}">${fmtAlpha(c.alpha)}</td>
-        <td><button class="delete-btn" onclick="deleteTranche(${t.id})" title="Remove tranche">✕</button></td>
+        <td><button class="delete-btn" onclick="deleteTranche('${t.id}')" title="Remove tranche">✕</button></td>
       </tr>`;
     }
 
@@ -353,7 +401,7 @@ function resetApiKey() {
   document.getElementById('apiKeyInput').value = '';
   const status = document.getElementById('keyStatus');
   status.className = 'key-status hardcoded';
-  status.textContent = 'Currently using: Hardcoded default key';
+  status.textContent = 'Currently using: default key';
 }
 
 // ============================================================
@@ -381,7 +429,7 @@ function parseDate(input) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function addTranche() {
+async function addTranche() {
   const ticker = document.getElementById('inputTicker').value.trim().toUpperCase();
   const rawDate = document.getElementById('inputDate').value;
   const date = parseDate(rawDate);
@@ -393,35 +441,75 @@ function addTranche() {
     return;
   }
 
-  const id = nextId++;
-  tranches.push({ id, ticker, date, purchasePrice: price, spyAtPurchase: spyPrice });
-  saveTranches();
+  const trancheData = { ticker, date, purchasePrice: price, spyAtPurchase: spyPrice };
+
+  if (useFirestore) {
+    try {
+      const docRef = await db.collection('tranches').add(trancheData);
+      tranches.push({ id: docRef.id, ...trancheData });
+    } catch (e) {
+      showError('Failed to save tranche: ' + e.message);
+      return;
+    }
+  } else {
+    const id = nextId++;
+    tranches.push({ id, ...trancheData });
+    saveToLocalStorage();
+  }
+
   closeAddTranche();
   renderTable();
   renderAlerts();
 }
 
-function deleteTranche(id) {
+async function deleteTranche(id) {
   if (!confirm('Remove this tranche?')) return;
-  tranches = tranches.filter(t => t.id !== id);
-  saveTranches();
+
+  if (useFirestore) {
+    try {
+      await db.collection('tranches').doc(String(id)).delete();
+    } catch (e) {
+      showError('Failed to delete tranche: ' + e.message);
+      return;
+    }
+  }
+
+  tranches = tranches.filter(t => String(t.id) !== String(id));
+
+  if (!useFirestore) {
+    saveToLocalStorage();
+  }
+
   renderTable();
   renderAlerts();
 }
 
-function updateTranche(id, field, value) {
+async function updateTranche(id, field, value) {
   const num = parseFloat(value);
   if (isNaN(num) || num < 0) return;
-  const t = tranches.find(t => t.id === id);
-  if (t) {
-    t[field] = num;
-    saveTranches();
-    renderTable();
-    renderAlerts();
+
+  const t = tranches.find(t => String(t.id) === String(id));
+  if (!t) return;
+
+  t[field] = num;
+
+  if (useFirestore) {
+    try {
+      await db.collection('tranches').doc(String(id)).update({ [field]: num });
+    } catch (e) {
+      showError('Failed to update tranche: ' + e.message);
+    }
+  } else {
+    saveToLocalStorage();
   }
+
+  renderTable();
+  renderAlerts();
 }
 
 // ============================================================
-// Initial render
+// Initial load
 // ============================================================
-renderTable();
+loadTranches().then(() => {
+  renderTable();
+});

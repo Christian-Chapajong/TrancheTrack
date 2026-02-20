@@ -4,6 +4,19 @@
 const API_KEY = 'QjYcLnaPWvwJPvw0de2fMqrp7RfWs_Dp';
 
 // ============================================================
+// Firebase configuration — fill in from Firebase Console
+// Project Settings → General → Your apps → Web app
+// ============================================================
+const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyBIvcofHybULhTl6uViGvFRSR6SCrxWvZA",
+    authDomain: "tranchetrack.firebaseapp.com",
+    projectId: "tranchetrack",
+    storageBucket: "tranchetrack.firebasestorage.app",
+    messagingSenderId: "371319607265",
+    appId: "1:371319607265:web:904a86f49bb46a0c6f4ca0"
+  };
+
+// ============================================================
 // Default tranches — loaded on first run or when localStorage
 // is cleared. Matches the client's Excel spreadsheet.
 // ============================================================
