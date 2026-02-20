@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TrancheTracker</title>
+<title>TrancheTrack</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 
 <div class="container">
   <header>
-    <h1>TrancheTracker</h1>
+    <h1>TrancheTrack</h1>
     <div class="header-actions">
       <span class="timestamp" id="lastRefresh">No data loaded — click Refresh Prices</span>
       <button class="btn-primary" id="refreshBtn" onclick="refreshPrices()">Refresh Prices</button>
@@ -39,7 +39,7 @@
           <th class="num">SPY (Now)</th>
           <th class="num">SPY % P&amp;L</th>
           <th class="num">SPY Ann. %</th>
-          <th class="num">Alpha (bps)</th>
+          <th class="num">Ann. Alpha</th>
           <th></th>
         </tr>
       </thead>
@@ -81,7 +81,7 @@
     </div>
     <div class="form-row">
       <label for="inputDate">Purchase Date</label>
-      <input type="date" id="inputDate">
+      <input type="text" id="inputDate" placeholder="MM/DD/YYYY">
     </div>
     <div class="form-row">
       <label for="inputPrice">Purchase Price ($)</label>
