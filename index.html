@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrancheTracker</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>TrancheTracker</h1>
+    <div class="header-actions">
+      <span class="timestamp" id="lastRefresh">No data loaded — click Refresh Prices</span>
+      <button class="btn-primary" id="refreshBtn" onclick="refreshPrices()">Refresh Prices</button>
+      <button onclick="openAddTranche()">+ Add Tranche</button>
+      <button onclick="openSettings()">Settings</button>
+    </div>
+  </header>
+
+  <div id="loadingMsg"></div>
+  <div id="errorMsg"></div>
+  <div class="alerts-container" id="alertsContainer"></div>
+
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Purchase Date</th>
+          <th class="num">Purchase Price</th>
+          <th class="num">Current Price</th>
+          <th class="num">Days Held</th>
+          <th class="num">P&amp;L</th>
+          <th class="num">% P&amp;L</th>
+          <th class="num">Ann. % P&amp;L</th>
+          <th class="num">SPY (Buy)</th>
+          <th class="num">SPY (Now)</th>
+          <th class="num">SPY % P&amp;L</th>
+          <th class="num">SPY Ann. %</th>
+          <th class="num">Alpha (bps)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr><td colspan="14" class="no-data">No data loaded — click <strong>Refresh Prices</strong> to fetch current market data.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Settings Overlay -->
+<div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel">
+    <h2>Settings — API Key</h2>
+    <div class="key-status" id="keyStatus"></div>
+    <label for="apiKeyInput">Polygon.io API Key Override</label>
+    <input type="text" id="apiKeyInput" placeholder="Enter your Polygon.io API key">
+    <hr class="settings-divider">
+    <label class="theme-toggle">
+      <span class="theme-label">Dark mode</span>
+      <input type="checkbox" id="themeToggle" onchange="toggleTheme()">
+      <span class="toggle-track"></span>
+    </label>
+    <div class="settings-actions">
+      <button class="btn-danger btn-sm" onclick="resetApiKey()">Reset to Default</button>
+      <button onclick="closeSettings()">Cancel</button>
+      <button class="btn-primary" onclick="saveApiKey()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Tranche Overlay -->
+<div class="add-tranche-overlay" id="addTrancheOverlay" onclick="if(event.target===this)closeAddTranche()">
+  <div class="add-tranche-panel">
+    <h2>Add New Tranche</h2>
+    <div class="form-row">
+      <label for="inputTicker">Ticker Symbol</label>
+      <input type="text" id="inputTicker" placeholder="e.g. AAPL">
+    </div>
+    <div class="form-row">
+      <label for="inputDate">Purchase Date</label>
+      <input type="date" id="inputDate">
+    </div>
+    <div class="form-row">
+      <label for="inputPrice">Purchase Price ($)</label>
+      <input type="number" id="inputPrice" step="0.01" placeholder="0.00">
+    </div>
+    <div class="form-row">
+      <label for="inputSpyPrice">SPY Price on Purchase Date ($)</label>
+      <input type="number" id="inputSpyPrice" step="0.01" placeholder="0.00">
+    </div>
+    <div class="form-actions">
+      <button onclick="closeAddTranche()">Cancel</button>
+      <button class="btn-primary" onclick="addTranche()">Add Tranche</button>
+    </div>
+  </div>
+</div>
+
+<script src="scripts/constants.js"></script>
+<script src="scripts/application.js"></script>
+</body>
+</html>
