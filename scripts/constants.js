@@ -1,7 +1,7 @@
 // ============================================================
 // Polygon.io API Key — edit this value for quick setup
 // ============================================================
-const API_KEY = 'QjYcLnaPWvwJPvw0de2fMqrp7RfWs_Dp';
+const API_KEY = 'JyLxpv8ycdllxRORM35xbpLqDcL1v9yU';
 
 // ============================================================
 // Firebase configuration — fill in from Firebase Console
