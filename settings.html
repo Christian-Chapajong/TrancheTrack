@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — TrancheTrack</title>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lexend+Exa:wght@100..900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+<body>
+
+<div class="sp-layout">
+  <div class="sp-container">
+
+    <div class="sp-header">
+      <a href="index.html" class="sp-back">&#8592; Back to Portfolio</a>
+      <img src="assets/img/logo.png" alt="TrancheTrack" class="logo sp-logo">
+    </div>
+
+    <h1 class="sp-title">Settings</h1>
+
+    <!-- API Key -->
+    <section class="sp-section">
+      <h2 class="sp-section-title">API Key</h2>
+      <div class="key-status" id="keyStatus"></div>
+      <label class="sp-label" for="apiKeyInput">Polygon.io API Key Override</label>
+      <input class="sp-input" type="text" id="apiKeyInput" placeholder="Enter your Polygon.io API key">
+      <div class="sp-actions">
+        <button class="btn-danger btn-sm" onclick="resetApiKey()">Reset to Default</button>
+        <button class="btn-primary" onclick="saveApiKey()">Save Key</button>
+      </div>
+    </section>
+
+    <!-- Appearance -->
+    <section class="sp-section">
+      <h2 class="sp-section-title">Appearance</h2>
+      <label class="theme-toggle">
+        <span class="theme-label">Dark mode</span>
+        <input type="checkbox" id="themeToggle" onchange="toggleTheme()">
+        <span class="toggle-track"></span>
+      </label>
+    </section>
+
+    <!-- Alert Thresholds -->
+    <section class="sp-section">
+      <h2 class="sp-section-title">Alert Thresholds</h2>
+      <p class="threshold-desc">Set buy/trim trigger levels per ticker (% from average cost basis).</p>
+      <div id="thresholdInputs"></div>
+      <div class="sp-actions">
+        <button class="btn-danger btn-sm" onclick="resetThresholds()">Reset to Defaults</button>
+        <button class="btn-primary" onclick="saveThresholds(event)">Save Thresholds</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="scripts/constants.js"></script>
+<script>
+// ── Theme ──────────────────────────────────────────────────
+function initTheme() {
+  if (localStorage.getItem('theme') === 'light') {
+    document.documentElement.removeAttribute('data-theme');
+  }
+}
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme', 'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.removeItem('theme');
+  }
+}
+initTheme();
+
+// ── API Key ────────────────────────────────────────────────
+function initApiKey() {
+  const override = localStorage.getItem('polygon_api_key_override');
+  document.getElementById('apiKeyInput').value = override || '';
+  const status = document.getElementById('keyStatus');
+  if (override) {
+    status.className = 'key-status override';
+    status.textContent = 'Currently using: User-supplied override key';
+  } else {
+    status.className = 'key-status hardcoded';
+    status.textContent = 'Currently using: default key';
+  }
+}
+function saveApiKey() {
+  const val = document.getElementById('apiKeyInput').value.trim();
+  if (val) {
+    localStorage.setItem('polygon_api_key_override', val);
+  } else {
+    localStorage.removeItem('polygon_api_key_override');
+  }
+  initApiKey();
+}
+function resetApiKey() {
+  localStorage.removeItem('polygon_api_key_override');
+  document.getElementById('apiKeyInput').value = '';
+  initApiKey();
+}
+
+// ── Alert Thresholds ───────────────────────────────────────
+function getSettingsAlertConfig() {
+  const saved = localStorage.getItem('alert_thresholds');
+  let overrides = {};
+  if (saved) { try { overrides = JSON.parse(saved); } catch (e) {} }
+  const tickers = [...new Set([...Object.keys(ALERT_CONFIG), ...Object.keys(overrides)])];
+  const config = {};
+  for (const ticker of tickers) {
+    const def  = ALERT_CONFIG[ticker] || { addPct: -0.20, trimPct: 0.40 };
+    const over = overrides[ticker]    || {};
+    config[ticker] = {
+      addPct:  over.addPct  != null ? over.addPct  : def.addPct,
+      trimPct: over.trimPct != null ? over.trimPct : def.trimPct
+    };
+  }
+  return { config, tickers };
+}
+function renderThresholdInputs() {
+  const { config, tickers } = getSettingsAlertConfig();
+  let html = '';
+  for (const ticker of tickers) {
+    const cfg = config[ticker];
+    html += `<div class="threshold-row">
+      <span class="threshold-ticker">${ticker}</span>
+      <span class="threshold-label">Buy &le;</span>
+      <input type="number" class="threshold-input" id="thresh_buy_${ticker}" step="1" value="${(cfg.addPct * 100).toFixed(0)}">
+      <span class="threshold-label">%</span>
+      <span class="threshold-label" style="margin-left:8px">Trim &ge;</span>
+      <input type="number" class="threshold-input" id="thresh_trim_${ticker}" step="1" value="${(cfg.trimPct * 100).toFixed(0)}">
+      <span class="threshold-label">%</span>
+    </div>`;
+  }
+  document.getElementById('thresholdInputs').innerHTML = html;
+}
+function saveThresholds(e) {
+  const { tickers } = getSettingsAlertConfig();
+  const thresholds = {};
+  for (const ticker of tickers) {
+    const buyEl  = document.getElementById(`thresh_buy_${ticker}`);
+    const trimEl = document.getElementById(`thresh_trim_${ticker}`);
+    if (buyEl && trimEl) {
+      thresholds[ticker] = {
+        addPct:  parseFloat(buyEl.value)  / 100,
+        trimPct: parseFloat(trimEl.value) / 100
+      };
+    }
+  }
+  localStorage.setItem('alert_thresholds', JSON.stringify(thresholds));
+  const btn = e.target;
+  const orig = btn.textContent;
+  btn.textContent = 'Saved ✓';
+  setTimeout(() => { btn.textContent = orig; }, 1500);
+}
+function resetThresholds() {
+  localStorage.removeItem('alert_thresholds');
+  renderThresholdInputs();
+}
+
+// ── Init ───────────────────────────────────────────────────
+document.getElementById('themeToggle').checked =
+  document.documentElement.getAttribute('data-theme') === 'dark';
+initApiKey();
+renderThresholdInputs();
+</script>
+
+</body>
+</html>

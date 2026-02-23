@@ -24,11 +24,11 @@ const DEFAULT_TRANCHES = [
   { id: 1,  ticker: 'DIA', date: '2020-07-21', purchasePrice: 269.60, spyAtPurchase: 325.01 },
   { id: 2,  ticker: 'GLD', date: '2022-07-18', purchasePrice: 159.34, spyAtPurchase: 381.95 },
   { id: 3,  ticker: 'GLD', date: '2025-10-13', purchasePrice: 376.73, spyAtPurchase: 663.04 },
-  { id: 4,  ticker: 'SLV', date: '2022-07-18', purchasePrice: 17.32, spyAtPurchase: 381.95 },
-  { id: 5,  ticker: 'MRK', date: '2005-07-26', purchasePrice: 29.81, spyAtPurchase: 84.33 },
-  { id: 6,  ticker: 'MRK', date: '2009-01-14', purchasePrice: 26.40, spyAtPurchase: 84.37 },
-  { id: 7,  ticker: 'MRK', date: '2025-05-27', purchasePrice: 77.12, spyAtPurchase: 591.15 },
-  { id: 8,  ticker: 'MRK', date: '2025-09-02', purchasePrice: 85.24, spyAtPurchase: 640.27 },
+  { id: 4,  ticker: 'SLV', date: '2022-07-18', purchasePrice: 17.32,  spyAtPurchase: 381.95 },
+  { id: 5,  ticker: 'MRK', date: '2005-07-26', purchasePrice: 29.81,  spyAtPurchase: 84.33  },
+  { id: 6,  ticker: 'MRK', date: '2009-01-14', purchasePrice: 26.40,  spyAtPurchase: 84.37  },
+  { id: 7,  ticker: 'MRK', date: '2025-05-27', purchasePrice: 77.12,  spyAtPurchase: 591.15 },
+  { id: 8,  ticker: 'MRK', date: '2025-09-02', purchasePrice: 85.24,  spyAtPurchase: 640.27 },
   { id: 9,  ticker: 'MRK', date: '2025-12-01', purchasePrice: 105.08, spyAtPurchase: 680.27 },
 ];
 

@@ -2,24 +2,84 @@
 // Theme
 // ============================================================
 function initTheme() {
-  const saved = localStorage.getItem('theme');
-  if (saved === 'dark') {
-    document.documentElement.setAttribute('data-theme', 'dark');
+  if (localStorage.getItem('theme') === 'light') {
+    document.documentElement.removeAttribute('data-theme');
   }
+  // Dark is the default — already set on <html data-theme="dark">
 }
 
 function toggleTheme() {
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
   if (isDark) {
     document.documentElement.removeAttribute('data-theme');
-    localStorage.removeItem('theme');
+    localStorage.setItem('theme', 'light');
   } else {
     document.documentElement.setAttribute('data-theme', 'dark');
-    localStorage.setItem('theme', 'dark');
+    localStorage.removeItem('theme');
   }
 }
 
 initTheme();
+
+// ============================================================
+// Toast notification system
+// ============================================================
+const _toastActive = new Map(); // fingerprint → auto-dismiss timeout id
+let _toastSeq = 0;
+
+// Derive a stable fingerprint so identical/related errors never stack up
+function _toastFingerprint(msg) {
+  // 429 rate-limit — all tickers share one slot
+  if (/:\s*429\b/.test(msg)) return 'rate-limit-429';
+  // Other HTTP status codes (403, 500, 503…) — grouped by code
+  const statusM = msg.match(/:\s*(\d{3})\b/);
+  if (statusM) return `api-err-${statusM[1]}`;
+  // "No price data returned for X" — one per ticker
+  const noPriceM = msg.match(/No price data returned for (\S+)/);
+  if (noPriceM) return `no-price-${noPriceM[1]}`;
+  // Firestore / Firebase errors
+  if (/firestore|firebase/i.test(msg)) return 'firestore';
+  // Failed to save/update/delete
+  if (/Failed to (save|update|delete)/i.test(msg)) return 'persist-error';
+  // Generic fallback — first 80 chars as key
+  return msg.slice(0, 80);
+}
+
+function showToast(msg, type = 'error', durationMs = 9000) {
+  const fp = _toastFingerprint(msg);
+  if (_toastActive.has(fp)) return;          // already visible — suppress duplicate
+
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+
+  const id = 'tt-' + (++_toastSeq);
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.id = id;
+  el.innerHTML =
+    `<span class="toast-msg">${msg}</span>` +
+    `<button class="toast-close" onclick="dismissToast('${id}','${fp}')">&times;</button>`;
+  container.appendChild(el);
+
+  const tid = setTimeout(() => dismissToast(id, fp), durationMs);
+  _toastActive.set(fp, tid);
+}
+
+function dismissToast(id, fp) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.add('toast-out');
+    setTimeout(() => el && el.remove(), 300);
+  }
+  if (_toastActive.has(fp)) {
+    clearTimeout(_toastActive.get(fp));
+    _toastActive.delete(fp);
+  }
+}
+
+function showError(msg) {
+  showToast(msg, 'error');
+}
 
 // ============================================================
 // Firebase / Firestore init
@@ -51,6 +111,63 @@ let accordionsInitialized = false;
 let sidebarOpen = false;
 let currentFilterTicker = '';
 let currentSort = 'ticker';
+let activeAlertTab = 'composite';
+let compHiddenTickers = new Set(); // tickers unchecked in composite filter
+let compFilterOpen = false;
+
+// ============================================================
+// Price cache (localStorage) — avoids redundant API calls on navigation
+// ============================================================
+const PRICE_CACHE_KEY = 'tt_price_cache';
+
+function savePriceCache() {
+  try {
+    localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({
+      currentPrices,
+      spyCurrentPrice,
+      lastRefreshTime: lastRefreshTime ? lastRefreshTime.toISOString() : null,
+      indicators
+    }));
+  } catch (e) {
+    // Storage quota exceeded — not critical
+  }
+}
+
+function loadPriceCache() {
+  try {
+    const raw = localStorage.getItem(PRICE_CACHE_KEY);
+    if (!raw) return false;
+    const cache = JSON.parse(raw);
+    if (!cache.spyCurrentPrice) return false;
+    currentPrices   = cache.currentPrices   || {};
+    spyCurrentPrice = cache.spyCurrentPrice;
+    indicators      = cache.indicators       || {};
+    lastRefreshTime = cache.lastRefreshTime ? new Date(cache.lastRefreshTime) : null;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function toggleCompFilter(ticker) {
+  if (compHiddenTickers.has(ticker)) {
+    compHiddenTickers.delete(ticker);
+  } else {
+    compHiddenTickers.add(ticker);
+  }
+  renderAlerts();
+}
+
+function toggleCompFilterDropdown(e) {
+  e.stopPropagation();
+  compFilterOpen = !compFilterOpen;
+  renderAlerts();
+}
+
+// Canonical key used for duplicate detection across all tranche operations
+function trancheKey(t) {
+  return `${t.ticker}|${t.date}|${parseFloat(t.purchasePrice).toFixed(2)}`;
+}
 
 // ============================================================
 // Data persistence — Firestore with localStorage fallback
@@ -59,9 +176,14 @@ async function loadTranches() {
   if (useFirestore) {
     try {
       const snapshot = await db.collection('tranches').get();
-      if (snapshot.empty) {
+      tranches = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+      // Seed any default tranches not yet present, identified by key
+      const existingKeys = new Set(tranches.map(trancheKey));
+      const missing = DEFAULT_TRANCHES.filter(t => !existingKeys.has(trancheKey(t)));
+      if (missing.length > 0) {
         const batch = db.batch();
-        for (const t of DEFAULT_TRANCHES) {
+        for (const t of missing) {
           const ref = db.collection('tranches').doc();
           batch.set(ref, {
             ticker: t.ticker,
@@ -71,11 +193,10 @@ async function loadTranches() {
           });
         }
         await batch.commit();
-        const seeded = await db.collection('tranches').get();
-        tranches = seeded.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      } else {
-        tranches = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const refreshed = await db.collection('tranches').get();
+        tranches = refreshed.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       }
+
       nextId = tranches.length + 1;
       return tranches;
     } catch (e) {
@@ -89,8 +210,14 @@ async function loadTranches() {
   if (saved) {
     try { tranches = JSON.parse(saved); } catch (e) { tranches = []; }
   }
-  if (tranches.length === 0) {
-    tranches = JSON.parse(JSON.stringify(DEFAULT_TRANCHES));
+  // Seed any missing defaults in localStorage too
+  const existingKeys = new Set(tranches.map(trancheKey));
+  const missing = DEFAULT_TRANCHES.filter(t => !existingKeys.has(trancheKey(t)));
+  if (missing.length > 0) {
+    let id = tranches.reduce((max, t) => Math.max(max, t.id || 0), 0) + 1;
+    for (const t of missing) {
+      tranches.push({ id: id++, ...t });
+    }
     localStorage.setItem('portfolio_tranches', JSON.stringify(tranches));
   }
   nextId = tranches.reduce((max, t) => Math.max(max, t.id || 0), 0) + 1;
@@ -136,11 +263,14 @@ async function fetchHistorical(ticker) {
   from.setDate(from.getDate() - 90);
   const fromStr = from.toISOString().split('T')[0];
   const toStr = to.toISOString().split('T')[0];
-  const url = `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&apiKey=${key}`;
+  const url = `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=120&apiKey=${key}`;
   const resp = await fetch(url);
-  if (!resp.ok) return [];
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Historical data error for ${ticker}: ${resp.status} — ${body}`);
+  }
   const data = await resp.json();
-  if (!data.results) return [];
+  if (!data.results || data.results.length === 0) return [];
   return data.results.map(r => ({ date: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v }));
 }
 
@@ -282,43 +412,41 @@ function calcIndicators(bars) {
 async function refreshPrices() {
   const btn = document.getElementById('refreshBtn');
   const loadingEl = document.getElementById('loadingMsg');
-  const errorEl = document.getElementById('errorMsg');
 
   btn.disabled = true;
   btn.textContent = 'Loading…';
-  errorEl.innerHTML = '';
-  loadingEl.innerHTML = '<span class="spinner"></span> Fetching prices from Polygon.io…';
+  loadingEl.innerHTML = '<span class="spinner"></span> Fetching prices & indicators from Polygon.io…';
 
   const tickers = [...new Set(tranches.map(t => t.ticker))];
   if (!tickers.includes('SPY')) tickers.push('SPY');
 
-  const errors = [];
+  const rateLimitTickers = [];
+  const otherErrors = [];
 
+  // One call per ticker: use the daily bars range endpoint for both price (last bar)
+  // and indicator calculation. This halves API usage vs separate price + historical calls.
   for (const ticker of tickers) {
-    try {
-      const price = await fetchPrice(ticker);
-      if (ticker === 'SPY') {
-        spyCurrentPrice = price;
-      } else {
-        currentPrices[ticker] = price;
-      }
-    } catch (e) {
-      errors.push(e.message);
-    }
-  }
-
-  // Fetch historical data for indicators
-  loadingEl.innerHTML = '<span class="spinner"></span> Calculating indicators…';
-  for (const ticker of tickers) {
-    if (ticker === 'SPY') continue;
     try {
       const bars = await fetchHistorical(ticker);
-      if (bars.length > 0) {
+      if (bars.length === 0) {
+        otherErrors.push(`No price data returned for ${ticker}`);
+        continue;
+      }
+      const latestClose = bars[bars.length - 1].c;
+      if (ticker === 'SPY') {
+        spyCurrentPrice = latestClose;
+      } else {
+        currentPrices[ticker] = latestClose;
         historicalData[ticker] = bars;
         indicators[ticker] = calcIndicators(bars);
       }
     } catch (e) {
-      // Non-critical
+      console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
+      if (/:\s*429\b/.test(e.message)) {
+        rateLimitTickers.push(ticker);
+      } else {
+        otherErrors.push(e.message);
+      }
     }
   }
 
@@ -326,14 +454,26 @@ async function refreshPrices() {
   btn.disabled = false;
   btn.textContent = 'Refresh Prices';
 
-  if (errors.length > 0) {
-    errorEl.innerHTML = '<div class="error-msg">' + errors.join('<br>') + '</div>';
+  // Show a single grouped toast for rate-limit errors
+  if (rateLimitTickers.length > 0) {
+    showToast(
+      `Rate limit exceeded (429) — too many requests. ` +
+      `Tickers affected: ${rateLimitTickers.join(', ')}. ` +
+      `Please wait a moment or upgrade your Polygon.io subscription.`,
+      'error', 12000
+    );
+  }
+
+  // Show remaining errors (deduplicated by fingerprint)
+  for (const msg of otherErrors) {
+    showToast(msg, 'error');
   }
 
   if (spyCurrentPrice !== null) {
     lastRefreshTime = new Date();
     document.getElementById('lastRefresh').textContent =
       'Last refresh: ' + lastRefreshTime.toLocaleString();
+    savePriceCache();
   }
 
   renderTable();
@@ -494,7 +634,10 @@ function rebuildAvgCostCache() {
   }
   for (const ticker in grouped) {
     const arr = grouped[ticker];
-    avgCostCache[ticker] = arr.reduce((s, t) => s + t.purchasePrice, 0) / arr.length;
+    // Dollar-weighted avg cost: Σ(price × shares) / Σ(shares)
+    // Tranches without shares fall back to weight 1 (equal weighting)
+    const totalWeight = arr.reduce((s, t) => s + (t.shares != null ? t.shares : 1), 0);
+    avgCostCache[ticker] = arr.reduce((s, t) => s + t.purchasePrice * (t.shares != null ? t.shares : 1), 0) / totalWeight;
   }
 }
 
@@ -524,6 +667,47 @@ function fmtOsc(ticker) {
 function fmtDate(dateStr) {
   const [y, m, d] = dateStr.split('-');
   return `${m}/${d}/${y}`;
+}
+
+// ============================================================
+// Composite Signal — combines oscillator (±2) + technicals (±1 each)
+// ============================================================
+function calcCompositeScore(ticker) {
+  const osc = calcOscillator(ticker);
+  const alertConfig = getAlertConfig();
+  const cfg = alertConfig[ticker] || { addPct: -0.20, trimPct: 0.40 };
+  let score = 0;
+
+  // Oscillator contribution (±2)
+  if (osc != null) {
+    if (osc <= cfg.addPct) score += 2;       // Buy zone → bullish
+    else if (osc >= cfg.trimPct) score -= 2; // Trim zone → bearish
+    // Hold zone → 0
+  }
+
+  // Technical indicator contributions (±1 each)
+  const ind = indicators[ticker];
+  if (ind) {
+    if (ind.rsi14 != null) {
+      if (ind.rsi14 >= 70) score -= 1;      // Overbought
+      else if (ind.rsi14 <= 30) score += 1; // Oversold
+    }
+    if (ind.stochK != null) {
+      if (ind.stochK >= 80) score -= 1;      // Overbought
+      else if (ind.stochK <= 20) score += 1; // Oversold
+    }
+    if (ind.sar && ind.sar.trend === 'Bearish') score -= 1;
+    if (ind.ema20 != null && currentPrices[ticker] != null && currentPrices[ticker] < ind.ema20) score -= 1;
+  }
+
+  let label, cssClass, icon;
+  if (score >= 3)       { label = 'Strong Buy';  cssClass = 'strong-buy';  icon = 'fa-arrow-up';             }
+  else if (score >= 1)  { label = 'Buy';          cssClass = 'buy';         icon = 'fa-arrow-up';             }
+  else if (score === 0) { label = 'Hold';          cssClass = 'hold';        icon = 'fa-pause';                }
+  else if (score >= -2) { label = 'Sell';          cssClass = 'sell';        icon = 'fa-circle-exclamation';   }
+  else                  { label = 'Strong Sell';  cssClass = 'strong-sell'; icon = 'fa-circle-exclamation';   }
+
+  return { score, label, cssClass, icon };
 }
 
 function toggleAccordion(ticker) {
@@ -562,7 +746,9 @@ function rsiLabel(val) {
 
 function renderIndicatorRow(ticker, curPrice) {
   const ind = indicators[ticker];
-  if (!ind) return '';
+  if (!ind) return `<tr class="indicators-row">
+    <td colspan="16"><div class="indicators-empty">Refresh prices to load technical indicators.</div></td>
+  </tr>`;
 
   const sarTrend = ind.sar ? ind.sar.trend : null;
   const sarVal = ind.sar ? ind.sar.value : null;
@@ -571,7 +757,7 @@ function renderIndicatorRow(ticker, curPrice) {
   const downFractal = fractals.down;
 
   return `<tr class="indicators-row">
-    <td colspan="15">
+    <td colspan="16">
       <div class="indicators-grid">
         <div class="indicator">
           <span class="indicator-label">EMA (20)</span>
@@ -619,10 +805,15 @@ function renderTrancheRow(t, c, isEditing) {
     ? `<input class="inline-input inline-input-date" type="text" value="${fmtDate(t.date)}" onchange="updateTrancheDate('${t.id}',this.value)" placeholder="MM/DD/YYYY">`
     : fmtDate(t.date);
 
+  const sharesCell = isEditing
+    ? `<input class="inline-input" type="number" step="0.001" value="${t.shares != null ? t.shares : ''}" placeholder="—" onchange="updateTranche('${t.id}','shares',this.value)">`
+    : (t.shares != null ? fmt(t.shares, 3).replace(/\.?0+$/, '') : '&mdash;');
+
   return `<tr class="tranche-row">
     <td>${t.ticker}</td>
     <td>${dateCell}</td>
     <td class="num">${priceCell}</td>
+    <td class="num shares-cell">${sharesCell}</td>
     <td class="num">${c.currentPrice != null ? '$' + fmt(c.currentPrice) : '—'}</td>
     <td class="num">${c.days}</td>
     <td class="num ${colorClass(c.pnl)}">${c.pnl != null ? '$' + fmt(c.pnl) : '—'}</td>
@@ -644,14 +835,14 @@ function renderTable() {
   rebuildAvgCostCache();
 
   if (tranches.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="15" class="no-data">No tranches — click <strong>+ Add Tranche</strong> to get started.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="16" class="no-data">No tranches — click <strong>+ Add Tranche</strong> to get started.</td></tr>';
     return;
   }
 
   const items = getFilteredSortedTranches();
 
   if (items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="15" class="no-data">No tranches match the current filter.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="16" class="no-data">No tranches match the current filter.</td></tr>';
     return;
   }
 
@@ -695,11 +886,13 @@ function renderTable() {
       const avgAlpha = alphaVals.length > 0 ? alphaVals.reduce((a, b) => a + b, 0) / alphaVals.length : null;
 
       const chevron = isExpanded ? '&#9660;' : '&#9654;';
+      const sig = calcCompositeScore(ticker);
       html += `<tr class="group-header" onclick="toggleAccordion('${ticker}')">
-        <td colspan="12">
+        <td colspan="13">
           <span class="accordion-chevron">${chevron}</span>
           <span class="accordion-ticker">${ticker}</span>
           <span class="accordion-meta">${n} tranche${n > 1 ? 's' : ''} · Avg: $${fmt(avgCost)} · Current: ${curPrice != null ? '$' + fmt(curPrice) : '—'}</span>
+          <span class="signal-badge signal-${sig.cssClass}"><i class="fa-solid ${sig.icon}"></i> ${sig.label}</span>
         </td>
         <td class="num ${colorClass(avgAlpha)}">${avgAlpha != null ? fmtAlpha(avgAlpha) : '—'}</td>
         <td class="num osc-cell ${oscColorClass(ticker)}">${fmtOsc(ticker)}</td>
@@ -719,6 +912,7 @@ function renderTable() {
         html += `<tr class="summary-row">
           <td colspan="2">${ticker} Summary</td>
           <td class="num">Avg: $${fmt(avgCost)}</td>
+          <td></td>
           <td class="num">${curPrice != null ? '$' + fmt(curPrice) : '—'}</td>
           <td colspan="8"></td>
           <td class="num ${colorClass(avgAlpha)}">${avgAlpha != null ? fmtAlpha(avgAlpha) : '—'}</td>
@@ -776,9 +970,17 @@ function renderOscGauge(pctFromAvg, config) {
   </div>`;
 }
 
+function setAlertTab(tab) {
+  activeAlertTab = tab;
+  renderAlerts();
+}
+
 function renderAlerts() {
+  const tabsEl = document.getElementById('alertsTabs');
   const container = document.getElementById('alertsContainer');
+
   if (spyCurrentPrice === null || Object.keys(currentPrices).length === 0) {
+    tabsEl.innerHTML = '';
     container.innerHTML = '<div class="sidebar-empty">Click <strong>Refresh Prices</strong> to generate alerts.</div>';
     return;
   }
@@ -787,7 +989,7 @@ function renderAlerts() {
   const alertConfig = getAlertConfig();
   const alertTickers = Object.keys(avgCostCache);
 
-  // Categorize alerts
+  // Build all category data
   const buyAlerts = [];
   const sellAlerts = [];
   const holdAlerts = [];
@@ -811,7 +1013,6 @@ function renderAlerts() {
       holdAlerts.push({ ticker, price, avgCost, pctStr, gauge, isMRK: ticker === 'MRK' });
     }
 
-    // Indicator-based alerts
     const ind = indicators[ticker];
     if (ind) {
       if (ind.rsi14 != null && ind.rsi14 >= 70) {
@@ -833,72 +1034,128 @@ function renderAlerts() {
     }
   }
 
+  // Composite scores ranked
+  const compTickers = alertTickers.filter(t => currentPrices[t] != null);
+  const ranked = compTickers
+    .map(t => ({ ticker: t, ...calcCompositeScore(t) }))
+    .sort((a, b) => b.score - a.score);
+
+  // ── Tab bar ──
+  const tabDefs = [
+    { id: 'composite', label: 'Composite',  count: null               },
+    { id: 'buy',       label: 'Buy',         count: buyAlerts.length   },
+    { id: 'sell',      label: 'Sell',        count: sellAlerts.length  },
+    { id: 'hold',      label: 'Hold',        count: holdAlerts.length  },
+    { id: 'technical', label: 'Technical',   count: indicatorAlerts.length },
+  ];
+  tabsEl.innerHTML = tabDefs.map(t =>
+    `<button class="sidebar-tab${activeAlertTab === t.id ? ' active' : ''}" onclick="setAlertTab('${t.id}')">
+      ${t.label}${t.count != null ? `<span class="tab-count">${t.count}</span>` : ''}
+    </button>`
+  ).join('');
+
+  // ── Active pane ──
   let html = '';
 
-  // Buy signals
-  html += `<div class="alert-category">
-    <div class="alert-category-header alert-cat-buy">
-      <span class="alert-cat-icon">&#9650;</span> Buy Signals
-      <span class="alert-cat-count">${buyAlerts.length}</span>
-    </div>`;
-  if (buyAlerts.length === 0) {
-    html += '<div class="alert-cat-empty">No buy signals</div>';
-  }
-  for (const a of buyAlerts) {
-    html += `<div class="alert alert-add ${a.isMRK ? 'alert-mrk' : ''}">
-      <div class="alert-main"><strong>${a.ticker}</strong> — Potential Add</div>
-      <div class="alert-detail">Current: $${fmt(a.price)} · Avg Cost: $${fmt(a.avgCost)}</div>
-      ${a.gauge}
-      <div class="alert-pct">${a.pctStr}</div>
-    </div>`;
-  }
-  html += '</div>';
-
-  // Sell signals
-  html += `<div class="alert-category">
-    <div class="alert-category-header alert-cat-sell">
-      <span class="alert-cat-icon">&#9660;</span> Sell / Trim Signals
-      <span class="alert-cat-count">${sellAlerts.length}</span>
-    </div>`;
-  if (sellAlerts.length === 0) {
-    html += '<div class="alert-cat-empty">No sell signals</div>';
-  }
-  for (const a of sellAlerts) {
-    html += `<div class="alert alert-trim ${a.isMRK ? 'alert-mrk' : ''}">
-      <div class="alert-main"><strong>${a.ticker}</strong> — Consider Trim</div>
-      <div class="alert-detail">Current: $${fmt(a.price)} · Avg Cost: $${fmt(a.avgCost)}</div>
-      ${a.gauge}
-      <div class="alert-pct">${a.pctStr}</div>
-    </div>`;
-  }
-  html += '</div>';
-
-  // Hold
-  html += `<div class="alert-category">
-    <div class="alert-category-header alert-cat-hold">
-      <span class="alert-cat-icon">&#9632;</span> Hold / Monitor
-      <span class="alert-cat-count">${holdAlerts.length}</span>
-    </div>`;
-  if (holdAlerts.length === 0) {
-    html += '<div class="alert-cat-empty">No positions in hold range</div>';
-  }
-  for (const a of holdAlerts) {
-    html += `<div class="alert alert-neutral">
-      <div class="alert-main"><strong>${a.ticker}</strong> — Within Range</div>
-      <div class="alert-detail">Current: $${fmt(a.price)} · Avg Cost: $${fmt(a.avgCost)}</div>
-      ${a.gauge}
-      <div class="alert-pct">${a.pctStr}</div>
-    </div>`;
-  }
-  html += '</div>';
-
-  // Indicator alerts
-  if (indicatorAlerts.length > 0) {
-    html += `<div class="alert-category">
-      <div class="alert-category-header alert-cat-indicator">
-        <span class="alert-cat-icon">&#9881;</span> Technical Signals
-        <span class="alert-cat-count">${indicatorAlerts.length}</span>
+  if (activeAlertTab === 'composite') {
+    if (ranked.length === 0) {
+      html = '<div class="sidebar-empty">No price data available.</div>';
+    } else {
+      // Dropdown filter
+      const filterLabel = compHiddenTickers.size === 0
+        ? 'All tickers'
+        : `${ranked.length - compHiddenTickers.size} / ${ranked.length} tickers`;
+      html = `<div class="comp-filter-wrap">
+        <button class="comp-filter-btn" onclick="toggleCompFilterDropdown(event)">
+          <span>${filterLabel}</span>
+          <span class="comp-filter-chevron">${compFilterOpen ? '&#9650;' : '&#9660;'}</span>
+        </button>
+        ${compFilterOpen ? `<div class="comp-filter-dropdown">
+          ${ranked.map(r => {
+            const checked = !compHiddenTickers.has(r.ticker) ? 'checked' : '';
+            return `<label class="comp-filter-option">
+              <input type="checkbox" ${checked} onchange="toggleCompFilter('${r.ticker}')">
+              <span>${r.ticker}</span>
+            </label>`;
+          }).join('')}
+        </div>` : ''}
       </div>`;
+
+      // Number-line rows (filtered)
+      const visible = ranked.filter(r => !compHiddenTickers.has(r.ticker));
+      if (visible.length === 0) {
+        html += '<div class="sidebar-empty">No tickers selected.</div>';
+      } else {
+        html += '<div class="comp-list">';
+        for (const r of visible) {
+          const needlePct = ((r.score + 6) / 12 * 100).toFixed(1);
+          const scoreStr = r.score > 0 ? `+${r.score}` : `${r.score}`;
+          html += `<div class="comp-row">
+            <div class="comp-row-top">
+              <span class="comp-ticker">${r.ticker}</span>
+              <span class="signal-badge signal-${r.cssClass}"><i class="fa-solid ${r.icon}"></i> ${r.label}</span>
+              <span class="comp-score signal-${r.cssClass}">${scoreStr}</span>
+            </div>
+            <div class="comp-nl">
+              <div class="comp-nl-zone comp-nl-strong-sell"></div>
+              <div class="comp-nl-zone comp-nl-sell"></div>
+              <div class="comp-nl-zone comp-nl-hold"></div>
+              <div class="comp-nl-zone comp-nl-buy"></div>
+              <div class="comp-nl-zone comp-nl-strong-buy"></div>
+              <div class="comp-nl-needle" style="left:${needlePct}%"></div>
+            </div>
+            <div class="comp-nl-labels">
+              <span>-6</span><span>-3</span><span>0</span><span>+3</span><span>+6</span>
+            </div>
+          </div>`;
+        }
+        html += '</div>';
+      }
+    }
+
+  } else if (activeAlertTab === 'buy') {
+    if (buyAlerts.length === 0) {
+      html = '<div class="sidebar-empty">No buy signals at current thresholds.</div>';
+    }
+    for (const a of buyAlerts) {
+      html += `<div class="alert alert-add ${a.isMRK ? 'alert-mrk' : ''}">
+        <div class="alert-main"><strong>${a.ticker}</strong> — Potential Add</div>
+        <div class="alert-detail">Current: $${fmt(a.price)} · Avg Cost: $${fmt(a.avgCost)}</div>
+        ${a.gauge}
+        <div class="alert-pct">${a.pctStr}</div>
+      </div>`;
+    }
+
+  } else if (activeAlertTab === 'sell') {
+    if (sellAlerts.length === 0) {
+      html = '<div class="sidebar-empty">No sell signals at current thresholds.</div>';
+    }
+    for (const a of sellAlerts) {
+      html += `<div class="alert alert-trim ${a.isMRK ? 'alert-mrk' : ''}">
+        <div class="alert-main"><strong>${a.ticker}</strong> — Consider Trim</div>
+        <div class="alert-detail">Current: $${fmt(a.price)} · Avg Cost: $${fmt(a.avgCost)}</div>
+        ${a.gauge}
+        <div class="alert-pct">${a.pctStr}</div>
+      </div>`;
+    }
+
+  } else if (activeAlertTab === 'hold') {
+    if (holdAlerts.length === 0) {
+      html = '<div class="sidebar-empty">No positions in hold range.</div>';
+    }
+    for (const a of holdAlerts) {
+      html += `<div class="alert alert-neutral">
+        <div class="alert-main"><strong>${a.ticker}</strong> — Within Range</div>
+        <div class="alert-detail">Current: $${fmt(a.price)} · Avg Cost: $${fmt(a.avgCost)}</div>
+        ${a.gauge}
+        <div class="alert-pct">${a.pctStr}</div>
+      </div>`;
+    }
+
+  } else if (activeAlertTab === 'technical') {
+    if (indicatorAlerts.length === 0) {
+      html = '<div class="sidebar-empty">No technical signals triggered.</div>';
+    }
     for (const a of indicatorAlerts) {
       const cls = a.type === 'caution' ? 'alert-indicator-caution' : 'alert-indicator-opportunity';
       html += `<div class="alert ${cls}">
@@ -906,7 +1163,6 @@ function renderAlerts() {
         <div class="alert-detail">${a.msg}</div>
       </div>`;
     }
-    html += '</div>';
   }
 
   container.innerHTML = html;
@@ -924,98 +1180,6 @@ function renderAlerts() {
 }
 
 // ============================================================
-// Settings
-// ============================================================
-function openSettings() {
-  const overlay = document.getElementById('settingsOverlay');
-  const input = document.getElementById('apiKeyInput');
-  const status = document.getElementById('keyStatus');
-
-  const override = localStorage.getItem('polygon_api_key_override');
-  input.value = override || '';
-
-  if (override) {
-    status.className = 'key-status override';
-    status.textContent = 'Currently using: User-supplied override key';
-  } else {
-    status.className = 'key-status hardcoded';
-    status.textContent = 'Currently using: default key';
-  }
-
-  document.getElementById('themeToggle').checked =
-    document.documentElement.getAttribute('data-theme') === 'dark';
-
-  renderThresholdInputs();
-  overlay.classList.add('open');
-}
-
-function renderThresholdInputs() {
-  const container = document.getElementById('thresholdInputs');
-  const config = getAlertConfig();
-  const tickers = [...new Set(tranches.map(t => t.ticker))];
-  let html = '';
-  for (const ticker of tickers) {
-    const cfg = config[ticker] || { addPct: -0.20, trimPct: 0.40 };
-    html += `<div class="threshold-row">
-      <span class="threshold-ticker">${ticker}</span>
-      <span class="threshold-label">Buy &le;</span>
-      <input type="number" class="threshold-input" id="thresh_buy_${ticker}" step="1" value="${(cfg.addPct * 100).toFixed(0)}">
-      <span class="threshold-label">%</span>
-      <span class="threshold-label" style="margin-left:8px">Trim &ge;</span>
-      <input type="number" class="threshold-input" id="thresh_trim_${ticker}" step="1" value="${(cfg.trimPct * 100).toFixed(0)}">
-      <span class="threshold-label">%</span>
-    </div>`;
-  }
-  container.innerHTML = html;
-}
-
-function closeSettings() {
-  document.getElementById('settingsOverlay').classList.remove('open');
-}
-
-function saveSettings() {
-  // Save API key
-  const val = document.getElementById('apiKeyInput').value.trim();
-  if (val) {
-    localStorage.setItem('polygon_api_key_override', val);
-  } else {
-    localStorage.removeItem('polygon_api_key_override');
-  }
-
-  // Save alert thresholds
-  const tickers = [...new Set(tranches.map(t => t.ticker))];
-  const thresholds = {};
-  for (const ticker of tickers) {
-    const buyEl = document.getElementById(`thresh_buy_${ticker}`);
-    const trimEl = document.getElementById(`thresh_trim_${ticker}`);
-    if (buyEl && trimEl) {
-      thresholds[ticker] = {
-        addPct: parseFloat(buyEl.value) / 100,
-        trimPct: parseFloat(trimEl.value) / 100
-      };
-    }
-  }
-  localStorage.setItem('alert_thresholds', JSON.stringify(thresholds));
-
-  closeSettings();
-  renderTable();
-  renderAlerts();
-}
-
-function resetApiKey() {
-  localStorage.removeItem('polygon_api_key_override');
-  document.getElementById('apiKeyInput').value = '';
-  const status = document.getElementById('keyStatus');
-  status.className = 'key-status hardcoded';
-  status.textContent = 'Currently using: default key';
-}
-
-function resetThresholds() {
-  localStorage.removeItem('alert_thresholds');
-  renderThresholdInputs();
-}
-
-// ============================================================
 // Add / Delete / Update Tranches
 // ============================================================
 function openAddTranche() {
@@ -1024,6 +1188,7 @@ function openAddTranche() {
   document.getElementById('inputDate').value = '';
   document.getElementById('inputPrice').value = '';
   document.getElementById('inputSpyPrice').value = '';
+  document.getElementById('inputShares').value = '';
 }
 
 function closeAddTranche() {
@@ -1051,7 +1216,16 @@ async function addTranche() {
     return;
   }
 
-  const trancheData = { ticker, date, purchasePrice: price, spyAtPurchase: spyPrice };
+  const sharesRaw = parseFloat(document.getElementById('inputShares').value);
+  const shares = isNaN(sharesRaw) || sharesRaw <= 0 ? null : sharesRaw;
+
+  const trancheData = { ticker, date, purchasePrice: price, spyAtPurchase: spyPrice, ...(shares != null && { shares }) };
+
+  // Block exact duplicates (same ticker + date + purchase price)
+  if (tranches.some(t => trancheKey(t) === trancheKey(trancheData))) {
+    alert(`A tranche for ${ticker} on ${rawDate} at $${price.toFixed(2)} already exists.`);
+    return;
+  }
 
   if (useFirestore) {
     try {
@@ -1095,17 +1269,32 @@ async function deleteTranche(id) {
 }
 
 async function updateTranche(id, field, value) {
-  const num = parseFloat(value);
-  if (isNaN(num) || num < 0) return;
-
   const t = tranches.find(t => String(t.id) === String(id));
   if (!t) return;
 
-  t[field] = num;
+  // Shares can be cleared (empty string → null)
+  let stored;
+  if (field === 'shares') {
+    const num = parseFloat(value);
+    stored = (!value || isNaN(num) || num <= 0) ? null : num;
+  } else {
+    const num = parseFloat(value);
+    if (isNaN(num) || num < 0) return;
+    stored = num;
+  }
+
+  if (stored === null) {
+    delete t[field];
+  } else {
+    t[field] = stored;
+  }
 
   if (useFirestore) {
     try {
-      await db.collection('tranches').doc(String(id)).update({ [field]: num });
+      const update = stored === null
+        ? { [field]: firebase.firestore.FieldValue.delete() }
+        : { [field]: stored };
+      await db.collection('tranches').doc(String(id)).update(update);
     } catch (e) {
       showError('Failed to update tranche: ' + e.message);
     }
@@ -1144,9 +1333,115 @@ async function updateTrancheDate(id, value) {
 }
 
 // ============================================================
-// Initial load — auto-refresh prices on first load
+// Migrate shares — backfill existing records that are missing share counts.
+// Keyed by "ticker|date|price" so it never touches new tranches added later.
 // ============================================================
-loadTranches().then(() => {
-  renderTable();
-  refreshPrices();
+const SHARES_SEED = {
+  'DIA|2020-07-21|269.60':  100,
+  'GLD|2022-07-18|159.34':   50,
+  'GLD|2025-10-13|376.73':   25,
+  'SLV|2022-07-18|17.32':   500,
+  'MRK|2005-07-26|29.81':   200,
+  'MRK|2009-01-14|26.40':   300,
+  'MRK|2025-05-27|77.12':   100,
+  'MRK|2025-09-02|85.24':    75,
+  'MRK|2025-12-01|105.08':   50,
+};
+
+async function migrateShares() {
+  const needsShares = tranches.filter(t => t.shares == null);
+  if (needsShares.length === 0) return;
+
+  for (const t of needsShares) {
+    const key = `${t.ticker}|${t.date}|${t.purchasePrice.toFixed(2)}`;
+    const shares = SHARES_SEED[key];
+    if (shares == null) continue;
+
+    t.shares = shares;
+
+    if (useFirestore) {
+      try {
+        await db.collection('tranches').doc(String(t.id)).update({ shares });
+      } catch (e) {
+        console.warn('migrateShares: could not update', t.id, e.message);
+      }
+    }
+  }
+
+  if (!useFirestore) {
+    saveToLocalStorage();
+  }
+}
+
+// ============================================================
+// Deduplicate — remove exact duplicates (same ticker+date+price),
+// keeping whichever copy has shares data; runs once on startup.
+// ============================================================
+async function deduplicateTranches() {
+  const best = new Map();   // key → tranche to keep
+  const toDelete = [];      // ids to remove
+
+  for (const t of tranches) {
+    const key = trancheKey(t);
+    if (!best.has(key)) {
+      best.set(key, t);
+    } else {
+      const existing = best.get(key);
+      // Prefer the copy that already has a shares value
+      if (t.shares != null && existing.shares == null) {
+        best.set(key, t);
+        toDelete.push(existing.id);
+      } else {
+        toDelete.push(t.id);
+      }
+    }
+  }
+
+  if (toDelete.length === 0) return;
+
+  tranches = tranches.filter(t => !toDelete.includes(t.id));
+
+  if (useFirestore) {
+    const batch = db.batch();
+    for (const id of toDelete) {
+      batch.delete(db.collection('tranches').doc(String(id)));
+    }
+    await batch.commit();
+  } else {
+    saveToLocalStorage();
+  }
+
+  console.log(`deduplicateTranches: removed ${toDelete.length} duplicate(s)`);
+}
+
+// ============================================================
+// Global click-outside handler — closes composite filter dropdown
+// ============================================================
+document.addEventListener('click', function(e) {
+  if (compFilterOpen && !e.target.closest('.comp-filter-wrap')) {
+    compFilterOpen = false;
+    renderAlerts();
+  }
+});
+
+// ============================================================
+// Initial load — restore cached prices or fetch fresh on first-ever load
+// ============================================================
+loadTranches().then(async () => {
+  await deduplicateTranches();
+  await migrateShares();
+
+  if (loadPriceCache()) {
+    // Restore from cache — no API calls needed
+    const refreshEl = document.getElementById('lastRefresh');
+    if (refreshEl && lastRefreshTime) {
+      refreshEl.textContent = 'Last refresh: ' + lastRefreshTime.toLocaleString();
+    }
+    renderTable();
+    renderAlerts();
+  } else {
+    // No cache yet — fetch prices for the first time
+    renderTable();
+    refreshPrices();
+  }
 });
