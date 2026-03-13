@@ -475,59 +475,82 @@ async function refreshPrices() {
 
   btn.disabled = true;
   btn.textContent = 'Loading…';
-  loadingEl.innerHTML = '<span class="spinner"></span> Fetching prices & indicators from Polygon.io…';
 
   const tickers = [...new Set(tranches.map(t => t.ticker))];
   if (!tickers.includes('SPY')) tickers.push('SPY');
 
-  const rateLimitTickers = [];
-  const otherErrors = [];
+  const BATCH  = 5;      // Polygon.io free tier: 5 requests per minute
+  const WINDOW = 61000;  // 61 s — slightly over 60 s to stay clear of the edge
+  const total  = tickers.length;
+  let   done   = 0;
 
-  // One call per ticker: use the daily bars range endpoint for both price (last bar)
-  // and indicator calculation. This halves API usage vs separate price + historical calls.
-  for (const ticker of tickers) {
-    try {
-      const bars = await fetchHistorical(ticker);
-      if (bars.length === 0) {
-        otherErrors.push(`No price data returned for ${ticker}`);
-        continue;
+  const rateLimitTickers = [];
+  const otherErrors      = [];
+
+  for (let i = 0; i < total; i += BATCH) {
+    const batch      = tickers.slice(i, i + BATCH);
+    const batchStart = Date.now();
+
+    loadingEl.innerHTML =
+      `<span class="spinner"></span> Fetching ${done + 1}–${Math.min(done + BATCH, total)} of ${total} tickers…`;
+
+    // Fire all 5 in the batch concurrently — still counts as 5 requests
+    await Promise.all(batch.map(async ticker => {
+      try {
+        const bars = await fetchHistorical(ticker);
+        if (bars.length === 0) {
+          otherErrors.push(`No price data returned for ${ticker}`);
+          return;
+        }
+        const latestClose = bars[bars.length - 1].c;
+        if (ticker === 'SPY') {
+          spyCurrentPrice = latestClose;
+        } else {
+          currentPrices[ticker]  = latestClose;
+          historicalData[ticker] = bars;
+          indicators[ticker]     = calcIndicators(bars);
+        }
+      } catch (e) {
+        console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
+        if (/:\s*429\b/.test(e.message)) rateLimitTickers.push(ticker);
+        else                             otherErrors.push(e.message);
       }
-      const latestClose = bars[bars.length - 1].c;
-      if (ticker === 'SPY') {
-        spyCurrentPrice = latestClose;
-      } else {
-        currentPrices[ticker] = latestClose;
-        historicalData[ticker] = bars;
-        indicators[ticker] = calcIndicators(bars);
-      }
-    } catch (e) {
-      console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
-      if (/:\s*429\b/.test(e.message)) {
-        rateLimitTickers.push(ticker);
-      } else {
-        otherErrors.push(e.message);
+    }));
+
+    done += batch.length;
+
+    // Render partial results so the table fills in as batches complete
+    if (spyCurrentPrice !== null) renderTable();
+
+    // If more tickers remain, hold until the full 61-second window has elapsed
+    if (done < total) {
+      const wait = WINDOW - (Date.now() - batchStart);
+      if (wait > 0) {
+        const until = Date.now() + wait;
+        await new Promise(resolve => {
+          const tick = setInterval(() => {
+            const secs = Math.ceil((until - Date.now()) / 1000);
+            loadingEl.innerHTML =
+              `<span class="spinner"></span> Rate limit — next batch in ${secs}s &nbsp;(${done} / ${total} done)`;
+            if (Date.now() >= until) { clearInterval(tick); resolve(); }
+          }, 500);
+        });
       }
     }
   }
 
   loadingEl.innerHTML = '';
-  btn.disabled = false;
-  btn.textContent = 'Refresh Prices';
+  btn.disabled        = false;
+  btn.textContent     = 'Refresh Prices';
 
-  // Show a single grouped toast for rate-limit errors
   if (rateLimitTickers.length > 0) {
     showToast(
-      `Rate limit exceeded (429) — too many requests. ` +
-      `Tickers affected: ${rateLimitTickers.join(', ')}. ` +
-      `Please wait a moment or upgrade your Polygon.io subscription.`,
+      `Rate limit (429) hit for: ${rateLimitTickers.join(', ')}. ` +
+      `Some prices may be missing — try refreshing again.`,
       'error', 12000
     );
   }
-
-  // Show remaining errors (deduplicated by fingerprint)
-  for (const msg of otherErrors) {
-    showToast(msg, 'error');
-  }
+  for (const msg of otherErrors) showToast(msg, 'error');
 
   if (spyCurrentPrice !== null) {
     lastRefreshTime = new Date();
@@ -538,8 +561,6 @@ async function refreshPrices() {
 
   renderTable();
   renderAlerts();
-
-  // Attempt to back-fill any missing SPY-at-purchase prices via API
   fillMissingSpyPrices();
 }
 
