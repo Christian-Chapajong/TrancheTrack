@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Import / Export — TrancheTrack</title>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lexend+Exa:wght@100..900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+<body>
+
+<div class="sp-layout">
+  <div class="sp-container">
+
+    <div class="sp-header">
+      <a href="index.html" class="sp-back">&#8592; Back to Portfolio</a>
+      <img src="assets/img/logo.png" alt="TrancheTrack" class="logo sp-logo">
+    </div>
+
+    <div class="coming-soon">
+      <div class="coming-soon-icon">&#9889;</div>
+      <h1 class="coming-soon-title">Import / Export</h1>
+      <p class="coming-soon-desc">This feature is coming soon.</p>
+      <a href="index.html" class="btn-primary coming-soon-btn">Back to Portfolio</a>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function initTheme() {
+  if (localStorage.getItem('theme') === 'light') {
+    document.documentElement.removeAttribute('data-theme');
+  }
+}
+initTheme();
+</script>
+
+</body>
+</html>

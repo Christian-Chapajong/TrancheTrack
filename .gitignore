@@ -1,0 +1,40 @@
+# ── Firebase ────────────────────────────────────────────────
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# ── Claude Code local settings ───────────────────────────────
+.claude/
+
+# ── Environment / secrets ────────────────────────────────────
+.env
+.env.*
+*.env
+
+# ── Node / dependencies ──────────────────────────────────────
+node_modules/
+npm-debug.log*
+
+# ── Build output ─────────────────────────────────────────────
+dist/
+build/
+
+# ── OS / editor cruft ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── Misc ─────────────────────────────────────────────────────
+*.log
+*.bak
+*.tmp
+
+# ── Local analysis files (not for deployment) ────────────────
+*.xlsx
+*.xls
+analysis_archive/
