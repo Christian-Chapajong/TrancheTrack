@@ -101,7 +101,10 @@ try {
 let tranches = [];
 let currentPrices = {};
 let spyCurrentPrice = null;
-let lastRefreshTime = null;
+let lastPriceRefresh = null;
+let lastIndicatorRefresh = null;
+let perTickerTs = {};
+let refreshLock = false;
 let nextId = 1;
 let expandedTickers = new Set();
 let editingTickers = new Set();
@@ -117,21 +120,31 @@ let compHiddenTickers = new Set(); // tickers unchecked in composite filter
 let compFilterOpen = false;
 
 // ============================================================
-// Price cache (localStorage) — avoids redundant API calls on navigation
+// Cache (localStorage) — two-speed: prices (8h) + indicators (7d)
 // ============================================================
-const PRICE_CACHE_KEY = 'tt_price_cache';
+const PRICE_CACHE_KEY     = 'tt_price_cache';
+const INDICATOR_CACHE_KEY = 'tt_indicator_cache';
+const PRICE_TTL_MS        = 8  * 60 * 60 * 1000;        // 8 hours
+const INDICATOR_TTL_MS    = 7  * 24 * 60 * 60 * 1000;   // 7 days
 
 function savePriceCache() {
   try {
     localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({
       currentPrices,
       spyCurrentPrice,
-      lastRefreshTime: lastRefreshTime ? lastRefreshTime.toISOString() : null,
-      indicators
+      lastPriceRefresh: lastPriceRefresh ? lastPriceRefresh.toISOString() : null,
+      perTickerTs
     }));
-  } catch (e) {
-    // Storage quota exceeded — not critical
-  }
+  } catch (e) { /* storage quota — not critical */ }
+}
+
+function saveIndicatorCache() {
+  try {
+    localStorage.setItem(INDICATOR_CACHE_KEY, JSON.stringify({
+      indicators,
+      lastIndicatorRefresh: lastIndicatorRefresh ? lastIndicatorRefresh.toISOString() : null
+    }));
+  } catch (e) { /* storage quota — not critical */ }
 }
 
 function loadPriceCache() {
@@ -140,13 +153,79 @@ function loadPriceCache() {
     if (!raw) return false;
     const cache = JSON.parse(raw);
     if (!cache.spyCurrentPrice) return false;
-    currentPrices   = cache.currentPrices   || {};
-    spyCurrentPrice = cache.spyCurrentPrice;
-    indicators      = cache.indicators       || {};
-    lastRefreshTime = cache.lastRefreshTime ? new Date(cache.lastRefreshTime) : null;
+    currentPrices    = cache.currentPrices    || {};
+    spyCurrentPrice  = cache.spyCurrentPrice;
+    lastPriceRefresh = cache.lastPriceRefresh ? new Date(cache.lastPriceRefresh) : null;
+    perTickerTs      = cache.perTickerTs       || {};
     return true;
   } catch (e) {
     return false;
+  }
+}
+
+function loadIndicatorCache() {
+  try {
+    const raw = localStorage.getItem(INDICATOR_CACHE_KEY);
+    if (!raw) return false;
+    const cache = JSON.parse(raw);
+    indicators           = cache.indicators           || {};
+    lastIndicatorRefresh = cache.lastIndicatorRefresh ? new Date(cache.lastIndicatorRefresh) : null;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function isPriceCacheFresh() {
+  return lastPriceRefresh != null && (Date.now() - lastPriceRefresh.getTime()) < PRICE_TTL_MS;
+}
+
+function isMarketOpen() {
+  const now = new Date();
+  // Convert to US Eastern time
+  const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const et = new Date(etStr);
+  const day = et.getDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false;
+  const hour = et.getHours();
+  const min  = et.getMinutes();
+  const mins = hour * 60 + min;
+  return mins >= 570 && mins < 960; // 9:30am–4:00pm ET
+}
+
+function marketStatusLabel() {
+  const now = new Date();
+  const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const et = new Date(etStr);
+  const day = et.getDay();
+  if (day === 0) return 'Market Closed (Sunday)';
+  if (day === 6) return 'Market Closed (Saturday)';
+  const hour = et.getHours();
+  const min  = et.getMinutes();
+  const mins = hour * 60 + min;
+  if (mins < 570) return 'Market Not Yet Open';
+  if (mins >= 960) return 'Market Closed (After Hours)';
+  return 'Market Open';
+}
+
+async function trySnapshotFetch(tickers) {
+  const key = getApiKey();
+  const joined = tickers.join(',');
+  const url = `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${joined}&apiKey=${key}`;
+  try {
+    const resp = await fetch(url);
+    if (resp.status === 403) return null; // free-tier — no access
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data.tickers) return null;
+    const prices = {};
+    for (const t of data.tickers) {
+      const price = t.day?.c || t.prevDay?.c;
+      if (price) prices[t.ticker] = price;
+    }
+    return prices;
+  } catch (e) {
+    return null;
   }
 }
 
@@ -469,60 +548,91 @@ function calcIndicators(bars) {
 // ============================================================
 // Refresh prices + historical data
 // ============================================================
-async function refreshPrices() {
-  const btn = document.getElementById('refreshBtn');
-  const loadingEl = document.getElementById('loadingMsg');
 
-  btn.disabled = true;
+// Quick refresh — prices only, skips if cache is fresh or market is closed
+async function quickRefreshPrices() {
+  if (refreshLock) return;
+
+  // Market-hours guard
+  if (!isMarketOpen() && isPriceCacheFresh()) {
+    showToast(`${marketStatusLabel()} — prices are up to date.`, 'success', 5000);
+    return;
+  }
+
+  // Per-ticker staleness: only fetch tickers older than PRICE_TTL_MS
+  const allTickers = [...new Set(tranches.map(t => t.ticker))];
+  if (!allTickers.includes('SPY')) allTickers.push('SPY');
+  const now = Date.now();
+  const stale = allTickers.filter(ticker => {
+    const ts = perTickerTs[ticker];
+    return !ts || (now - new Date(ts).getTime()) >= PRICE_TTL_MS;
+  });
+
+  if (stale.length === 0) {
+    showToast('All prices are up to date.', 'success', 4000);
+    return;
+  }
+
+  refreshLock = true;
+  const btn       = document.getElementById('refreshBtn');
+  const loadingEl = document.getElementById('loadingMsg');
+  btn.disabled    = true;
   btn.textContent = 'Loading…';
 
-  const tickers = [...new Set(tranches.map(t => t.ticker))];
-  if (!tickers.includes('SPY')) tickers.push('SPY');
+  // Try snapshot endpoint first (~1 API call)
+  const snapshotPrices = await trySnapshotFetch(stale);
+  if (snapshotPrices) {
+    for (const ticker of stale) {
+      const price = snapshotPrices[ticker];
+      if (price == null) continue;
+      if (ticker === 'SPY') spyCurrentPrice = price;
+      else currentPrices[ticker] = price;
+      perTickerTs[ticker] = new Date().toISOString();
+    }
+    lastPriceRefresh = new Date();
+    document.getElementById('lastRefresh').textContent =
+      'Last refresh: ' + lastPriceRefresh.toLocaleString();
+    savePriceCache();
+    renderTable();
+    renderAlerts();
+    btn.disabled    = false;
+    btn.textContent = 'Refresh Prices';
+    loadingEl.innerHTML = '';
+    refreshLock = false;
+    return;
+  }
 
-  const BATCH  = 5;      // Polygon.io free tier: 5 requests per minute
-  const WINDOW = 61000;  // 61 s — slightly over 60 s to stay clear of the edge
-  const total  = tickers.length;
+  // Fallback: batched /prev calls (5/min rate limit)
+  const BATCH  = 5;
+  const WINDOW = 61000;
+  const total  = stale.length;
   let   done   = 0;
-
   const rateLimitTickers = [];
   const otherErrors      = [];
 
   for (let i = 0; i < total; i += BATCH) {
-    const batch      = tickers.slice(i, i + BATCH);
+    const batch      = stale.slice(i, i + BATCH);
     const batchStart = Date.now();
 
     loadingEl.innerHTML =
       `<span class="spinner"></span> Fetching ${done + 1}–${Math.min(done + BATCH, total)} of ${total} tickers…`;
 
-    // Fire all 5 in the batch concurrently — still counts as 5 requests
     await Promise.all(batch.map(async ticker => {
       try {
-        const bars = await fetchHistorical(ticker);
-        if (bars.length === 0) {
-          otherErrors.push(`No price data returned for ${ticker}`);
-          return;
-        }
-        const latestClose = bars[bars.length - 1].c;
-        if (ticker === 'SPY') {
-          spyCurrentPrice = latestClose;
-        } else {
-          currentPrices[ticker]  = latestClose;
-          historicalData[ticker] = bars;
-          indicators[ticker]     = calcIndicators(bars);
-        }
+        const price = await fetchPrice(ticker);
+        if (ticker === 'SPY') spyCurrentPrice = price;
+        else currentPrices[ticker] = price;
+        perTickerTs[ticker] = new Date().toISOString();
       } catch (e) {
         console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
         if (/:\s*429\b/.test(e.message)) rateLimitTickers.push(ticker);
-        else                             otherErrors.push(e.message);
+        else otherErrors.push(e.message);
       }
     }));
 
     done += batch.length;
-
-    // Render partial results so the table fills in as batches complete
     if (spyCurrentPrice !== null) renderTable();
 
-    // If more tickers remain, hold until the full 61-second window has elapsed
     if (done < total) {
       const wait = WINDOW - (Date.now() - batchStart);
       if (wait > 0) {
@@ -542,6 +652,103 @@ async function refreshPrices() {
   loadingEl.innerHTML = '';
   btn.disabled        = false;
   btn.textContent     = 'Refresh Prices';
+  refreshLock         = false;
+
+  if (rateLimitTickers.length > 0) {
+    showToast(
+      `Rate limit (429) hit for: ${rateLimitTickers.join(', ')}. Some prices may be missing.`,
+      'error', 12000
+    );
+  }
+  for (const msg of otherErrors) showToast(msg, 'error');
+
+  if (spyCurrentPrice !== null) {
+    lastPriceRefresh = new Date();
+    document.getElementById('lastRefresh').textContent =
+      'Last refresh: ' + lastPriceRefresh.toLocaleString();
+    savePriceCache();
+  }
+
+  renderTable();
+  renderAlerts();
+}
+
+// Full refresh — fetches 90-day bars and recomputes all indicators
+async function fullRefresh() {
+  if (refreshLock) return;
+  refreshLock = true;
+
+  const btn       = document.getElementById('fullRefreshBtn');
+  const loadingEl = document.getElementById('loadingMsg');
+
+  btn.disabled    = true;
+  btn.textContent = 'Loading…';
+
+  const tickers = [...new Set(tranches.map(t => t.ticker))];
+  if (!tickers.includes('SPY')) tickers.push('SPY');
+
+  const BATCH  = 5;
+  const WINDOW = 61000;
+  const total  = tickers.length;
+  let   done   = 0;
+
+  const rateLimitTickers = [];
+  const otherErrors      = [];
+
+  for (let i = 0; i < total; i += BATCH) {
+    const batch      = tickers.slice(i, i + BATCH);
+    const batchStart = Date.now();
+
+    loadingEl.innerHTML =
+      `<span class="spinner"></span> Fetching ${done + 1}–${Math.min(done + BATCH, total)} of ${total} tickers…`;
+
+    await Promise.all(batch.map(async ticker => {
+      try {
+        const bars = await fetchHistorical(ticker);
+        if (bars.length === 0) {
+          otherErrors.push(`No price data returned for ${ticker}`);
+          return;
+        }
+        const latestClose = bars[bars.length - 1].c;
+        if (ticker === 'SPY') {
+          spyCurrentPrice = latestClose;
+        } else {
+          currentPrices[ticker]  = latestClose;
+          historicalData[ticker] = bars;
+          indicators[ticker]     = calcIndicators(bars);
+        }
+        perTickerTs[ticker] = new Date().toISOString();
+      } catch (e) {
+        console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
+        if (/:\s*429\b/.test(e.message)) rateLimitTickers.push(ticker);
+        else                             otherErrors.push(e.message);
+      }
+    }));
+
+    done += batch.length;
+
+    if (spyCurrentPrice !== null) renderTable();
+
+    if (done < total) {
+      const wait = WINDOW - (Date.now() - batchStart);
+      if (wait > 0) {
+        const until = Date.now() + wait;
+        await new Promise(resolve => {
+          const tick = setInterval(() => {
+            const secs = Math.ceil((until - Date.now()) / 1000);
+            loadingEl.innerHTML =
+              `<span class="spinner"></span> Rate limit — next batch in ${secs}s &nbsp;(${done} / ${total} done)`;
+            if (Date.now() >= until) { clearInterval(tick); resolve(); }
+          }, 500);
+        });
+      }
+    }
+  }
+
+  loadingEl.innerHTML = '';
+  btn.disabled        = false;
+  btn.textContent     = 'Full Refresh';
+  refreshLock         = false;
 
   if (rateLimitTickers.length > 0) {
     showToast(
@@ -553,10 +760,14 @@ async function refreshPrices() {
   for (const msg of otherErrors) showToast(msg, 'error');
 
   if (spyCurrentPrice !== null) {
-    lastRefreshTime = new Date();
+    lastPriceRefresh = new Date();
+    lastIndicatorRefresh = new Date();
     document.getElementById('lastRefresh').textContent =
-      'Last refresh: ' + lastRefreshTime.toLocaleString();
+      'Last refresh: ' + lastPriceRefresh.toLocaleString();
+    const indEl = document.getElementById('lastIndicatorRefresh');
+    if (indEl) indEl.textContent = 'Indicators: ' + lastIndicatorRefresh.toLocaleString();
     savePriceCache();
+    saveIndicatorCache();
   }
 
   renderTable();
@@ -1551,16 +1762,27 @@ loadTranches().then(async () => {
   await migrateShares();
 
   if (loadPriceCache()) {
-    // Restore from cache — no API calls needed
+    loadIndicatorCache();
+
     const refreshEl = document.getElementById('lastRefresh');
-    if (refreshEl && lastRefreshTime) {
-      refreshEl.textContent = 'Last refresh: ' + lastRefreshTime.toLocaleString();
+    if (refreshEl && lastPriceRefresh) {
+      refreshEl.textContent = 'Last refresh: ' + lastPriceRefresh.toLocaleString();
     }
+    const indEl = document.getElementById('lastIndicatorRefresh');
+    if (indEl && lastIndicatorRefresh) {
+      indEl.textContent = 'Indicators: ' + lastIndicatorRefresh.toLocaleString();
+    }
+
     renderTable();
     renderAlerts();
+
+    // Auto-refresh prices if stale
+    if (!isPriceCacheFresh()) {
+      quickRefreshPrices();
+    }
   } else {
-    // No cache yet — fetch prices for the first time
+    // No cache yet — full refresh required
     renderTable();
-    refreshPrices();
+    fullRefresh();
   }
 });

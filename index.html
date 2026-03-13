@@ -19,7 +19,9 @@
         <img src="assets/img/logo.png" alt="TrancheTrack" class="logo">
         <div class="header-actions">
           <span class="timestamp" id="lastRefresh">Loading prices…</span>
-          <button class="btn-primary" id="refreshBtn" onclick="refreshPrices()">Refresh Prices</button>
+          <span class="timestamp" id="lastIndicatorRefresh"></span>
+          <button class="btn-primary" id="refreshBtn" onclick="quickRefreshPrices()">Refresh Prices</button>
+          <button class="btn-secondary" id="fullRefreshBtn" onclick="fullRefresh()">Full Refresh</button>
           <button onclick="openAddTranche()">+ Add Tranche</button>
           <button onclick="window.location.href='import-export.html'">Import / Export</button>
           <button onclick="toggleSidebar()" id="alertsBtn">Alerts</button>
@@ -99,7 +101,7 @@
     </div>
     <div class="sidebar-tabs" id="alertsTabs"></div>
     <div class="sidebar-content" id="alertsContainer">
-      <div class="sidebar-empty">Click <strong>Refresh Prices</strong> to generate alerts.</div>
+      <div class="sidebar-empty">Click <strong>Refresh Prices</strong> or <strong>Full Refresh</strong> to generate alerts.</div>
     </div>
   </aside>
 </div>

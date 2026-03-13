@@ -325,6 +325,13 @@ button:active {
   border-color: #004d44;
   opacity: 1;
 }
+.btn-secondary {
+  font-size: 0.78rem;
+  opacity: 0.6;
+}
+.btn-secondary:hover {
+  opacity: 0.9;
+}
 
 .btn-danger {
   background: var(--red-bg);
