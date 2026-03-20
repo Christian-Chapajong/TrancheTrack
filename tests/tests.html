@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrancheTrack — Unit Tests</title>
+  <style>
+    /* ── CSS Variables (dark theme default, mirrors main app) ── */
+    :root {
+      --bg:          #0f1117;
+      --bg-card:     #161b22;
+      --bg-row:      #1a2030;
+      --border:      #2e3348;
+      --text:        #c9d1d9;
+      --text-muted:  #8b949e;
+      --text-head:   #e6edf3;
+      --green:       #34d399;
+      --red:         #f87171;
+      --yellow:      #fbbf24;
+      --blue:        #60a5fa;
+      --purple:      #a78bfa;
+      --radius:      6px;
+      --font:        'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    [data-theme="light"] {
+      --bg:         #f4f3ef;
+      --bg-card:    #ffffff;
+      --bg-row:     #f9f8f5;
+      --border:     #d4d0c8;
+      --text:       #24292e;
+      --text-muted: #57606a;
+      --text-head:  #1c2128;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 0 0 3rem;
+    }
+
+    /* ── Header ── */
+    .page-header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    .page-header h1 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: var(--text-head);
+      letter-spacing: -0.01em;
+    }
+    .back-link {
+      color: var(--blue);
+      text-decoration: none;
+      font-size: 0.875rem;
+    }
+    .back-link:hover { text-decoration: underline; }
+
+    /* ── Summary bar ── */
+    .summary-bar {
+      max-width: 900px;
+      margin: 1.5rem auto 0;
+      padding: 0 1.5rem;
+    }
+    .summary-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.6rem 1.2rem;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .summary-pass { color: var(--green); }
+    .summary-fail { color: var(--red); }
+    .summary-sep  { color: var(--text-muted); }
+
+    /* ── Results table ── */
+    .results-wrap {
+      max-width: 900px;
+      margin: 1rem auto 0;
+      padding: 0 1.5rem;
+    }
+    table.results {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    table.results thead th {
+      background: var(--bg-card);
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.05em;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+    }
+    table.results tbody tr {
+      border-bottom: 1px solid var(--border);
+    }
+    table.results tbody tr:nth-child(even) {
+      background: var(--bg-row);
+    }
+    table.results tbody td {
+      padding: 0.55rem 0.75rem;
+      vertical-align: top;
+    }
+
+    /* Status column */
+    .td-status {
+      width: 2.2rem;
+      text-align: center;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+    .td-status.pass { color: var(--green); }
+    .td-status.fail { color: var(--red); }
+
+    /* Test number */
+    .td-num {
+      width: 2.5rem;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      padding-top: 0.65rem;
+    }
+
+    /* Test name */
+    .td-name {
+      color: var(--text-head);
+      font-weight: 500;
+    }
+
+    /* Error message */
+    .td-error {
+      color: var(--red);
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Group header rows */
+    .group-header td {
+      background: var(--bg-card);
+      color: var(--purple);
+      font-weight: 700;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      padding: 0.6rem 0.75rem;
+      border-top: 2px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+<header class="page-header">
+  <h1>TrancheTrack &mdash; Unit Tests</h1>
+  <a class="back-link" href="../index.html">&larr; Back to app</a>
+</header>
+
+<div class="summary-bar">
+  <div class="summary-pill" id="summaryPill">Running&hellip;</div>
+</div>
+
+<div class="results-wrap">
+  <table class="results">
+    <thead>
+      <tr>
+        <th class="td-status-h"></th>
+        <th>#</th>
+        <th>Test</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody id="resultsBody"></tbody>
+  </table>
+</div>
+
+<script>
+'use strict';
+
+// ============================================================
+// TEST RUNNER
+// ============================================================
+const results = { pass: 0, fail: 0 };
+const _rows = [];
+
+function test(name, fn) {
+  try {
+    fn();
+    results.pass++;
+    _rows.push({ name, ok: true, error: '' });
+  } catch (e) {
+    results.fail++;
+    _rows.push({ name, ok: false, error: e.message || String(e) });
+  }
+}
+
+function assert(condition, msg) {
+  if (!condition) throw new Error(msg || 'Assertion failed');
+}
+
+function assertClose(a, b, tolerance, msg) {
+  if (typeof a !== 'number' || typeof b !== 'number') {
+    throw new Error((msg || 'assertClose') + ': expected numbers, got ' + a + ' and ' + b);
+  }
+  if (Math.abs(a - b) > tolerance) {
+    throw new Error(
+      (msg || 'assertClose') + ': |' + a + ' - ' + b + '| = ' +
+      Math.abs(a - b).toPrecision(6) + ' > tolerance ' + tolerance
+    );
+  }
+}
+
+function assertNull(v, msg) {
+  if (v !== null) throw new Error((msg || 'assertNull') + ': expected null, got ' + JSON.stringify(v));
+}
+
+function assertNotNull(v, msg) {
+  if (v === null || v === undefined) throw new Error((msg || 'assertNotNull') + ': expected non-null, got ' + v);
+}
+
+// ============================================================
+// GROUP A: AWESOME OSCILLATOR — pure functions (copied inline)
+// ============================================================
+
+function calcSMALine(values, period) {
+  if (!values || values.length === 0) return [];
+  const result = new Array(values.length).fill(null);
+  for (let i = period - 1; i < values.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      sum += values[j];
+    }
+    result[i] = sum / period;
+  }
+  return result;
+}
+
+function calcAOSeries(bars) {
+  if (!bars || bars.length === 0) return [];
+  const midpoints = bars.map(b => (b.h + b.l) / 2);
+  const sma5  = calcSMALine(midpoints, 5);
+  const sma34 = calcSMALine(midpoints, 34);
+  return bars.map((_, i) => {
+    if (sma5[i] === null || sma34[i] === null) return null;
+    return sma5[i] - sma34[i];
+  });
+}
+
+function analyzeAO(bars) {
+  const empty = {
+    aoValues: [],
+    signals: [],
+    state: 'out',
+    peakNeg: null,
+    latestAO: null,
+    prevAO: null,
+  };
+
+  if (!bars || bars.length < 35) return empty;
+
+  const aoValues = calcAOSeries(bars);
+  const signals  = [];
+
+  let state   = 'out';
+  let peakNeg = null;
+  let prevAO      = null;
+  let prevPrevAO  = null;
+
+  for (let i = 0; i < aoValues.length; i++) {
+    const ao = aoValues[i];
+    if (ao === null) {
+      prevPrevAO = prevAO;
+      prevAO     = ao;
+      continue;
+    }
+
+    // ── State: 'out' ─────────────────────────────────────────
+    if (state === 'out') {
+      if (ao < 0) {
+        if (peakNeg === null || ao < peakNeg) peakNeg = ao;
+      }
+      if (
+        prevAO !== null &&
+        prevPrevAO !== null &&
+        prevAO < 0 &&
+        ao < 0 &&
+        ao > prevAO &&
+        prevAO <= prevPrevAO
+      ) {
+        signals.push({ i, date: bars[i].date, type: 'buy-t1', label: 'T1 Buy', ao, peakNeg });
+        state = 't1';
+      } else if (ao >= 0) {
+        state = 'riding';
+      }
+    }
+
+    // ── State: 't1' ──────────────────────────────────────────
+    else if (state === 't1') {
+      if (ao < 0 && peakNeg !== null && ao < peakNeg) {
+        peakNeg = ao;
+        state = 'out';
+      } else if (ao >= 0) {
+        signals.push({ i, date: bars[i].date, type: 'buy-t3', label: 'T3 Buy (zero cross)', ao });
+        state = 'riding';
+      } else if (peakNeg !== null && ao >= peakNeg / 2) {
+        signals.push({ i, date: bars[i].date, type: 'buy-t2', label: 'T2 Buy', ao, peakNeg });
+        state = 't2';
+      }
+    }
+
+    // ── State: 't2' ──────────────────────────────────────────
+    else if (state === 't2') {
+      if (ao < 0 && peakNeg !== null && ao < peakNeg) {
+        peakNeg = ao;
+        state = 'out';
+      } else if (ao >= 0) {
+        signals.push({ i, date: bars[i].date, type: 'buy-t3', label: 'T3 Buy (zero cross)', ao });
+        state = 'riding';
+      }
+    }
+
+    // ── State: 'riding' ──────────────────────────────────────
+    else if (state === 'riding') {
+      if (ao < 0) {
+        signals.push({ i, date: bars[i].date, type: 'sell-neg', label: 'Sell (went negative)', ao });
+        peakNeg = ao;
+        state = 'out';
+      } else if (
+        prevAO !== null &&
+        prevAO > 0 &&
+        ao < prevAO &&
+        (prevPrevAO === null || prevAO >= prevPrevAO)
+      ) {
+        signals.push({ i, date: bars[i].date, type: 'sell-peak', label: 'Sell Alert', ao });
+        state = 'sell-watch';
+      }
+    }
+
+    // ── State: 'sell-watch' ──────────────────────────────────
+    else if (state === 'sell-watch') {
+      if (ao < 0) {
+        peakNeg = ao;
+        state = 'out';
+      } else if (prevAO !== null && ao > prevAO) {
+        state = 'riding';
+      }
+    }
+
+    prevPrevAO = prevAO;
+    prevAO     = ao;
+  }
+
+  const validValues = aoValues.filter(v => v !== null);
+  const latestAO    = validValues.length > 0 ? validValues[validValues.length - 1] : null;
+  const prevAOFinal = validValues.length > 1 ? validValues[validValues.length - 2] : null;
+
+  return { aoValues, signals, state, peakNeg, latestAO, prevAO: prevAOFinal };
+}
+
+// ============================================================
+// GROUP B: APPLICATION INDICATOR FUNCTIONS (copied inline)
+// ============================================================
+
+function calcEMA(closes, period) {
+  if (closes.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function calcRSI(closes, period) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + (diff >= 0 ? diff : 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+function calcStochastic(highs, lows, closes, kPeriod, dPeriod) {
+  if (closes.length < kPeriod) return { k: null, d: null };
+  const kValues = [];
+  for (let i = kPeriod - 1; i < closes.length; i++) {
+    const sliceH = highs.slice(i - kPeriod + 1, i + 1);
+    const sliceL = lows.slice(i - kPeriod + 1, i + 1);
+    const hh = Math.max(...sliceH);
+    const ll = Math.min(...sliceL);
+    const k = hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100;
+    kValues.push(k);
+  }
+  const latestK = kValues[kValues.length - 1];
+  let latestD = null;
+  if (kValues.length >= dPeriod) {
+    latestD = kValues.slice(-dPeriod).reduce((a, b) => a + b, 0) / dPeriod;
+  }
+  return { k: latestK, d: latestD };
+}
+
+function calcParabolicSAR(highs, lows, closes) {
+  if (closes.length < 5) return null;
+  const af0 = 0.02, afMax = 0.20;
+  let bull = true;
+  let sar  = lows[0];
+  let ep   = highs[0];
+  let af   = af0;
+
+  for (let i = 1; i < closes.length; i++) {
+    const prevSar = sar;
+    sar = prevSar + af * (ep - prevSar);
+
+    if (bull) {
+      sar = Math.min(sar, lows[Math.max(0, i - 1)], lows[Math.max(0, i - 2)]);
+      if (lows[i] < sar) {
+        bull = false;
+        sar  = ep;
+        ep   = lows[i];
+        af   = af0;
+      } else {
+        if (highs[i] > ep) {
+          ep = highs[i];
+          af = Math.min(af + af0, afMax);
+        }
+      }
+    } else {
+      sar = Math.max(sar, highs[Math.max(0, i - 1)], highs[Math.max(0, i - 2)]);
+      if (highs[i] > sar) {
+        bull = true;
+        sar  = ep;
+        ep   = highs[i];
+        af   = af0;
+      } else {
+        if (lows[i] < ep) {
+          ep = lows[i];
+          af = Math.min(af + af0, afMax);
+        }
+      }
+    }
+  }
+  return { value: sar, trend: bull ? 'Bullish' : 'Bearish' };
+}
+
+function calcFractals(highs, lows) {
+  if (!highs || !lows || highs.length < 5 || lows.length < 5) {
+    return { up: null, down: null };
+  }
+  let upIndex   = null;
+  let downIndex = null;
+
+  for (let i = 2; i < highs.length - 2; i++) {
+    if (
+      highs[i] > highs[i - 1] && highs[i] > highs[i - 2] &&
+      highs[i] > highs[i + 1] && highs[i] > highs[i + 2]
+    ) {
+      upIndex = i;
+    }
+    if (
+      lows[i] < lows[i - 1] && lows[i] < lows[i - 2] &&
+      lows[i] < lows[i + 1] && lows[i] < lows[i + 2]
+    ) {
+      downIndex = i;
+    }
+  }
+
+  return {
+    up:   upIndex   != null ? { index: upIndex,   price: highs[upIndex]   } : null,
+    down: downIndex != null ? { index: downIndex,  price: lows[downIndex]  } : null,
+  };
+}
+
+function calcIndicators(bars) {
+  if (!bars || bars.length < 14) return null;
+  const closes = bars.map(b => b.c);
+  const highs  = bars.map(b => b.h);
+  const lows   = bars.map(b => b.l);
+  return {
+    ema20:    calcEMA(closes, 20),
+    rsi14:    calcRSI(closes, 14),
+    stochK:   calcStochastic(highs, lows, closes, 14, 3).k,
+    stochD:   calcStochastic(highs, lows, closes, 14, 3).d,
+    sar:      calcParabolicSAR(highs, lows, closes),
+    fractals: calcFractals(highs, lows),
+  };
+}
+
+// ============================================================
+// TEST HELPERS
+// ============================================================
+
+/** Build a bar with h=high, l=low, c=(h+l)/2, date auto-generated */
+function makeBar(h, l, i) {
+  const day = i + 1;
+  const dd   = day < 10 ? '0' + day : String(day);
+  // Cycle months when day overflows 28
+  const month = Math.floor(i / 28) + 1;
+  const mm    = month < 10 ? '0' + month : String(month);
+  const dayInMonth = (i % 28) + 1;
+  const ddInMonth  = dayInMonth < 10 ? '0' + dayInMonth : String(dayInMonth);
+  return {
+    date: `2024-${mm}-${ddInMonth < 10 ? '0' + dayInMonth : dayInMonth}`,
+    o: (h + l) / 2,
+    h,
+    l,
+    c: (h + l) / 2,
+  };
+}
+
+/**
+ * makeBars(midpoints) — creates bars array where bar[i] has
+ * h = midpoints[i] + 0.5, l = midpoints[i] - 0.5, c = midpoints[i]
+ */
+function makeBars(midpoints) {
+  return midpoints.map((m, i) => {
+    const day = i + 1;
+    const month = Math.floor(i / 28) + 1;
+    const mm    = month < 10 ? '0' + month : String(month);
+    const dayInMonth = (i % 28) + 1;
+    const ddInMonth  = dayInMonth < 10 ? '0' + dayInMonth : String(dayInMonth);
+    return {
+      date: `2024-${mm}-${ddInMonth}`,
+      o: m,
+      h: m + 0.5,
+      l: m - 0.5,
+      c: m,
+    };
+  });
+}
+
+/** Build n bars all with h=high, l=low */
+function makeFlatBars(n, h, l) {
+  return Array.from({ length: n }, (_, i) => makeBar(h, l, i));
+}
+
+/** Build n bars with ascending closes (for RSI all-gains) */
+function makeAscendingBars(n, start, step) {
+  step = step || 1;
+  return Array.from({ length: n }, (_, i) => {
+    const c = start + i * step;
+    return { date: '2024-01-' + (i + 1 < 10 ? '0' + (i + 1) : i + 1), o: c, h: c + 0.5, l: c - 0.5, c };
+  });
+}
+
+/** Build n bars with descending closes (for RSI all-losses) */
+function makeDescendingBars(n, start, step) {
+  step = step || 1;
+  return Array.from({ length: n }, (_, i) => {
+    const c = start - i * step;
+    return { date: '2024-01-' + (i + 1 < 10 ? '0' + (i + 1) : i + 1), o: c, h: c + 0.5, l: c - 0.5, c };
+  });
+}
+
+// ============================================================
+// GROUP LABELS (used for table sectioning)
+// ============================================================
+const GROUP_A_LABEL = 'Group A — Awesome Oscillator (awesome-oscillator.js)';
+const GROUP_B_LABEL = 'Group B — Application Indicators (application.js)';
+let _currentGroup = null;
+const _groupRows  = [];  // [{isGroup, label} | {isTest, ...}]
+
+function group(label) {
+  _currentGroup = label;
+  _groupRows.push({ isGroup: true, label });
+}
+
+function testG(name, fn) {
+  try {
+    fn();
+    results.pass++;
+    _groupRows.push({ isGroup: false, ok: true,  name, error: '' });
+  } catch (e) {
+    results.fail++;
+    _groupRows.push({ isGroup: false, ok: false, name, error: e.message || String(e) });
+  }
+}
+
+// ============================================================
+// ============================================================
+// TESTS
+// ============================================================
+// ============================================================
+
+// ── GROUP A: calcSMALine ─────────────────────────────────────
+group(GROUP_A_LABEL);
+
+testG('calcSMALine: returns null for first period-1 elements', () => {
+  const values = [1, 2, 3, 4, 5];
+  const result = calcSMALine(values, 3);
+  assertNull(result[0], 'result[0] should be null');
+  assertNull(result[1], 'result[1] should be null');
+  assertClose(result[2], 2, 1e-9, 'result[2] should be 2');
+});
+
+testG('calcSMALine: correct values', () => {
+  const result = calcSMALine([10, 20, 30, 40, 50], 3);
+  assertClose(result[2], 20, 1e-9, 'SMA at index 2');
+  assertClose(result[3], 30, 1e-9, 'SMA at index 3');
+  assertClose(result[4], 40, 1e-9, 'SMA at index 4');
+});
+
+testG('calcSMALine: period=1 returns value itself', () => {
+  const values = [5, 10, 15];
+  const result = calcSMALine(values, 1);
+  assertClose(result[0], 5,  1e-9, 'result[0]');
+  assertClose(result[1], 10, 1e-9, 'result[1]');
+  assertClose(result[2], 15, 1e-9, 'result[2]');
+});
+
+testG('calcSMALine: empty array returns empty', () => {
+  const result = calcSMALine([], 3);
+  assert(Array.isArray(result), 'result should be an array');
+  assert(result.length === 0, 'result should be empty');
+});
+
+testG('calcSMALine: fewer bars than period returns all nulls', () => {
+  const result = calcSMALine([1, 2], 5);
+  assert(result.length === 2, 'length should be 2');
+  assertNull(result[0], 'result[0] should be null');
+  assertNull(result[1], 'result[1] should be null');
+});
+
+// ── GROUP A: calcAOSeries ────────────────────────────────────
+
+testG('calcAOSeries: returns null for first 33 bars', () => {
+  const bars = makeFlatBars(40, 10, 8);
+  const result = calcAOSeries(bars);
+  for (let i = 0; i <= 32; i++) {
+    assertNull(result[i], `result[${i}] should be null`);
+  }
+});
+
+testG('calcAOSeries: AO=0 when SMA5=SMA34 of midpoint', () => {
+  // All bars identical: h=10, l=8 → midpoint always 9
+  // SMA5 and SMA34 both equal 9 → AO = 0
+  const bars = makeFlatBars(50, 10, 8);
+  const result = calcAOSeries(bars);
+  const nonNull = result.filter(v => v !== null);
+  assert(nonNull.length > 0, 'should have some non-null values');
+  for (const v of nonNull) {
+    assertClose(v, 0, 1e-9, 'AO should be 0 when SMA5=SMA34');
+  }
+});
+
+testG('calcAOSeries: AO positive when recent prices higher', () => {
+  // First 34 bars: midpoint 10, last 16 bars: midpoint 20
+  // SMA5 of midpoints will be 20 (recent), SMA34 will be lower → AO positive
+  const mids = [
+    ...Array(34).fill(10),
+    ...Array(16).fill(20),
+  ];
+  const bars = makeBars(mids);
+  const result = calcAOSeries(bars);
+  const last = result[result.length - 1];
+  assertNotNull(last, 'last AO should not be null');
+  assert(last > 0, 'final AO should be positive, got ' + last);
+});
+
+testG('calcAOSeries: not enough bars returns array of nulls', () => {
+  const bars = makeFlatBars(10, 10, 8);
+  const result = calcAOSeries(bars);
+  assert(result.length === 10, 'length should equal bars length');
+  for (const v of result) {
+    assertNull(v, 'all values should be null for < 34 bars');
+  }
+});
+
+testG('calcAOSeries: result length equals bars length', () => {
+  const bars = makeFlatBars(50, 10, 8);
+  const result = calcAOSeries(bars);
+  assert(result.length === 50, 'result.length should be 50, got ' + result.length);
+});
+
+// ── GROUP A: analyzeAO ───────────────────────────────────────
+
+testG('analyzeAO: empty/short bars returns default state', () => {
+  const shortBars = makeFlatBars(20, 10, 8);
+  const res = analyzeAO(shortBars);
+  assert(res.state === 'out', 'state should be "out"');
+  assertNull(res.latestAO, 'latestAO should be null for < 35 bars');
+});
+
+testG('analyzeAO: all positive AO → riding state', () => {
+  // First 34: midpoint 10, next 16: midpoint 20
+  // AO becomes positive and stays positive → 'riding'
+  const mids = [
+    ...Array(34).fill(10),
+    ...Array(16).fill(20),
+  ];
+  const bars = makeBars(mids);
+  const res = analyzeAO(bars);
+  assert(
+    res.state === 'riding' || res.state === 'sell-watch',
+    'state should be riding or sell-watch when AO is positive, got: ' + res.state
+  );
+  assertNotNull(res.latestAO, 'latestAO should not be null');
+  assert(res.latestAO > 0, 'latestAO should be positive');
+});
+
+testG('analyzeAO: detects buy-t1 signal when negative AO inflects upward', () => {
+  // Establish baseline with 35 bars at midpoint 10
+  // Then drop to midpoint 8 for several bars (AO goes negative and falls)
+  // Then rise to midpoint 9 (AO rises from trough, still negative) → buy-t1
+  const mids = [
+    ...Array(35).fill(10),   // bars 0-34: baseline
+    ...Array(5).fill(8),     // bars 35-39: AO negative, falling
+    ...Array(5).fill(9),     // bars 40-44: AO rising but still negative → T1
+  ];
+  const bars = makeBars(mids);
+  const res = analyzeAO(bars);
+  const t1signals = res.signals.filter(s => s.type === 'buy-t1');
+  assert(
+    t1signals.length >= 1,
+    'signals should contain at least one buy-t1, got: ' + JSON.stringify(res.signals.map(s => s.type))
+  );
+});
+
+testG('analyzeAO: sell-neg signal when AO turns negative after riding', () => {
+  // bars 0-33: midpoint=10 (baseline for SMA34)
+  // bars 34-40: midpoint=15 (AO positive → riding)
+  // bars 41-50: midpoint=5 (AO turns negative → sell-neg)
+  const mids = [
+    ...Array(34).fill(10),
+    ...Array(7).fill(15),
+    ...Array(10).fill(5),
+  ];
+  const bars = makeBars(mids);
+  const res = analyzeAO(bars);
+  const types = res.signals.map(s => s.type);
+  const hasBuyT3 = types.includes('buy-t3');
+  const hasSellNeg = types.includes('sell-neg');
+  assert(
+    hasSellNeg,
+    'signals should contain sell-neg, got: ' + JSON.stringify(types)
+  );
+  // A buy-t3 (zero-cross) or buy signal should appear before the sell
+  const firstSellIdx = types.indexOf('sell-neg');
+  const hasAnyBuyBefore = types.slice(0, firstSellIdx).some(t => t.startsWith('buy'));
+  assert(
+    hasAnyBuyBefore,
+    'a buy signal should precede sell-neg, got signals: ' + JSON.stringify(types)
+  );
+});
+
+testG('analyzeAO: latestAO is last non-null value', () => {
+  const mids = Array(50).fill(10);
+  const bars = makeBars(mids);
+  const res = analyzeAO(bars);
+  const aoValues = res.aoValues;
+  const validValues = aoValues.filter(v => v !== null);
+  assert(validValues.length > 0, 'should have valid AO values');
+  const expectedLatest = validValues[validValues.length - 1];
+  assertClose(res.latestAO, expectedLatest, 1e-9, 'latestAO should equal last non-null aoValues entry');
+});
+
+testG('analyzeAO: returns aoValues array same length as bars', () => {
+  const mids = Array(50).fill(10);
+  const bars = makeBars(mids);
+  const res = analyzeAO(bars);
+  assert(res.aoValues.length === 50, 'aoValues.length should be 50, got ' + res.aoValues.length);
+});
+
+// ── GROUP B: calcEMA ─────────────────────────────────────────
+group(GROUP_B_LABEL);
+
+testG('calcEMA: returns null with fewer bars than period', () => {
+  const result = calcEMA([1, 2, 3], 5);
+  assertNull(result, 'calcEMA should return null when closes.length < period');
+});
+
+testG('calcEMA: period=1 returns last close', () => {
+  const closes = [10, 20, 30, 40, 50];
+  const result = calcEMA(closes, 1);
+  // With period=1: initial EMA=closes[0]=10, k=2/2=1
+  // Each step: ema = closes[i]*1 + ema*0 = closes[i]
+  // Final ema = closes[closes.length-1] = 50
+  assertClose(result, 50, 1e-9, 'calcEMA(period=1) should return last close');
+});
+
+testG('calcEMA: reasonable value for known sequence', () => {
+  // 10 bars of 10, then 1 bar of 15
+  // Initial SMA(10) = 10, k = 2/11
+  // One step: EMA = 15 * (2/11) + 10 * (9/11) ≈ 10.909
+  const closes = [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 15];
+  const result = calcEMA(closes, 10);
+  assertNotNull(result, 'result should not be null');
+  assert(result > 10, 'EMA should be above 10 after a higher close, got ' + result);
+  assert(result < 15, 'EMA should be below 15 (dampened), got ' + result);
+});
+
+// ── GROUP B: calcRSI ─────────────────────────────────────────
+
+testG('calcRSI: returns null with insufficient data', () => {
+  const result = calcRSI([1, 2, 3, 4, 5], 14);
+  assertNull(result, 'calcRSI should return null with fewer than period+1 closes');
+});
+
+testG('calcRSI: all gains → RSI=100', () => {
+  // Strictly ascending: every period is a gain, no losses
+  const closes = Array.from({ length: 15 }, (_, i) => i + 1); // [1,2,...,15]
+  const result = calcRSI(closes, 14);
+  assertClose(result, 100, 1e-9, 'RSI should be 100 for all-gain series');
+});
+
+testG('calcRSI: all losses → RSI=0', () => {
+  // Strictly descending: [15,14,...,1]
+  const closes = Array.from({ length: 15 }, (_, i) => 15 - i); // [15,14,...,1]
+  const result = calcRSI(closes, 14);
+  assertClose(result, 0, 1e-9, 'RSI should be 0 for all-loss series');
+});
+
+testG('calcRSI: mixed → RSI between 0 and 100', () => {
+  // Zigzag: up and down alternating
+  const closes = [10, 12, 11, 13, 12, 14, 13, 15, 14, 16, 15, 17, 16, 18, 17, 19, 18, 20, 19, 21];
+  const result = calcRSI(closes, 14);
+  assertNotNull(result, 'RSI should not be null with 20 closes and period=14');
+  assert(result >= 0,   'RSI should be >= 0, got ' + result);
+  assert(result <= 100, 'RSI should be <= 100, got ' + result);
+});
+
+// ── GROUP B: calcStochastic ──────────────────────────────────
+
+testG('calcStochastic: returns null k,d with insufficient data', () => {
+  const h = [1, 2, 3, 4, 5];
+  const l = [0.5, 1.5, 2.5, 3.5, 4.5];
+  const c = [0.8, 1.8, 2.8, 3.8, 4.8];
+  const result = calcStochastic(h, l, c, 14, 3);
+  assertNull(result.k, 'k should be null with fewer bars than kPeriod');
+});
+
+testG('calcStochastic: %K=100 when close is at high', () => {
+  // close = high for every bar → close is always at the period high
+  const n = 10;
+  const highs  = Array.from({ length: n }, (_, i) => 10 + i);
+  const lows   = Array.from({ length: n }, (_, i) => 5 + i);
+  const closes = Array.from({ length: n }, (_, i) => 10 + i); // close = high
+  const result = calcStochastic(highs, lows, closes, 5, 3);
+  assertClose(result.k, 100, 1e-9, '%K should be 100 when close=high');
+});
+
+testG('calcStochastic: %K=0 when close is at low', () => {
+  // close = low for every bar → close is always at the period low
+  const n = 10;
+  const highs  = Array.from({ length: n }, (_, i) => 10 + i);
+  const lows   = Array.from({ length: n }, (_, i) => 5 + i);
+  const closes = Array.from({ length: n }, (_, i) => 5 + i); // close = low
+  const result = calcStochastic(highs, lows, closes, 5, 3);
+  assertClose(result.k, 0, 1e-9, '%K should be 0 when close=low');
+});
+
+testG('calcStochastic: %K between 0 and 100', () => {
+  // Realistic bars with close between high and low
+  const n = 20;
+  const highs  = Array.from({ length: n }, (_, i) => 100 + (i % 5));
+  const lows   = Array.from({ length: n }, (_, i) => 95  + (i % 3));
+  // Clamp close to be between low and high
+  const closes = Array.from({ length: n }, (_, i) => {
+    const h = highs[i];
+    const l = lows[i];
+    // Ensure close is always between low and high
+    const mid = (h + l) / 2;
+    return mid;
+  });
+  const result = calcStochastic(highs, lows, closes, 5, 3);
+  assertNotNull(result.k, 'k should not be null');
+  assert(result.k >= 0,   '%K should be >= 0, got ' + result.k);
+  assert(result.k <= 100, '%K should be <= 100, got ' + result.k);
+});
+
+// ── GROUP B: calcParabolicSAR ────────────────────────────────
+
+testG('calcParabolicSAR: returns null for fewer than 5 bars', () => {
+  const h = [10, 11, 12];
+  const l = [9,  10, 11];
+  const c = [9.5, 10.5, 11.5];
+  const result = calcParabolicSAR(h, l, c);
+  assertNull(result, 'calcParabolicSAR should return null for < 5 bars');
+});
+
+testG('calcParabolicSAR: returns trend Bullish or Bearish', () => {
+  const n = 20;
+  // Uptrending bars
+  const highs  = Array.from({ length: n }, (_, i) => 100 + i);
+  const lows   = Array.from({ length: n }, (_, i) => 98  + i);
+  const closes = Array.from({ length: n }, (_, i) => 99  + i);
+  const result = calcParabolicSAR(highs, lows, closes);
+  assertNotNull(result, 'result should not be null');
+  assert(
+    result.trend === 'Bullish' || result.trend === 'Bearish',
+    'trend should be Bullish or Bearish, got: ' + result.trend
+  );
+});
+
+testG('calcParabolicSAR: result has value property', () => {
+  const n = 20;
+  const highs  = Array.from({ length: n }, (_, i) => 100 + i * 0.5);
+  const lows   = Array.from({ length: n }, (_, i) => 98  + i * 0.5);
+  const closes = Array.from({ length: n }, (_, i) => 99  + i * 0.5);
+  const result = calcParabolicSAR(highs, lows, closes);
+  assertNotNull(result, 'result should not be null');
+  assert(typeof result.value === 'number', 'result.value should be a number, got: ' + typeof result.value);
+  assert(!isNaN(result.value), 'result.value should not be NaN');
+});
+
+// ── GROUP B: calcFractals ────────────────────────────────────
+
+testG('calcFractals: returns null up/down for fewer than 5 bars', () => {
+  const h = [10, 11, 12];
+  const l = [9,  10, 11];
+  const result = calcFractals(h, l);
+  assertNull(result.up,   'up should be null for < 5 bars');
+  assertNull(result.down, 'down should be null for < 5 bars');
+});
+
+testG('calcFractals: detects up fractal at clear peak', () => {
+  // highs: [1, 2, 3, 2, 1, 4, 3, 2, 3, 4]
+  // Index 5 has high=4, surrounded by: h[3]=2, h[4]=1, h[6]=3, h[7]=2 → clear fractal up at index 5
+  const highs = [1, 2, 3, 2, 1, 4, 3, 2, 3, 4];
+  const lows  = Array(10).fill(0.5);
+  const result = calcFractals(highs, lows);
+  // The function scans i=2..n-3, so last considered i is 7
+  // At i=5: highs[5]=4 > highs[4]=1, highs[3]=2, highs[6]=3, highs[7]=2 → YES fractal
+  assertNotNull(result.up, 'up fractal should be detected');
+  assertClose(result.up.price, 4, 1e-9, 'up fractal price should be 4');
+});
+
+testG('calcFractals: no fractal in flat data', () => {
+  // All highs equal → no element is strictly greater than its neighbors
+  const highs = Array(10).fill(5);
+  const lows  = Array(10).fill(3);
+  const result = calcFractals(highs, lows);
+  assertNull(result.up,   'up should be null in flat data');
+  assertNull(result.down, 'down should be null in flat data');
+});
+
+// ── GROUP B: calcIndicators integration ──────────────────────
+
+testG('calcIndicators: returns null for fewer than 14 bars', () => {
+  const bars = Array.from({ length: 10 }, (_, i) => ({
+    date: '2024-01-' + (i + 1),
+    o: 10, h: 11, l: 9, c: 10,
+  }));
+  const result = calcIndicators(bars);
+  assertNull(result, 'calcIndicators should return null for < 14 bars');
+});
+
+testG('calcIndicators: returns object with all expected keys', () => {
+  const n = 50;
+  const bars = Array.from({ length: n }, (_, i) => ({
+    date: '2024-01-' + (i + 1 < 10 ? '0' + (i + 1) : i + 1),
+    o: 100 + i * 0.1,
+    h: 101 + i * 0.1,
+    l: 99  + i * 0.1,
+    c: 100 + i * 0.2,
+  }));
+  const result = calcIndicators(bars);
+  assertNotNull(result, 'result should not be null for 50 bars');
+  assert('ema20'    in result, 'result should have ema20');
+  assert('rsi14'    in result, 'result should have rsi14');
+  assert('stochK'   in result, 'result should have stochK');
+  assert('stochD'   in result, 'result should have stochD');
+  assert('sar'      in result, 'result should have sar');
+  assert('fractals' in result, 'result should have fractals');
+});
+
+testG('calcIndicators: rsi14 between 0 and 100', () => {
+  // Alternating up/down closes for a realistic mixed RSI
+  const n = 50;
+  const bars = Array.from({ length: n }, (_, i) => {
+    const c = 100 + Math.sin(i * 0.4) * 5;
+    return { date: '2024-01-' + i, o: c, h: c + 1, l: c - 1, c };
+  });
+  const result = calcIndicators(bars);
+  assertNotNull(result, 'result should not be null');
+  assertNotNull(result.rsi14, 'rsi14 should not be null');
+  assert(result.rsi14 >= 0,   'rsi14 should be >= 0, got ' + result.rsi14);
+  assert(result.rsi14 <= 100, 'rsi14 should be <= 100, got ' + result.rsi14);
+});
+
+testG('calcIndicators: sar has trend and value', () => {
+  const n = 50;
+  const bars = Array.from({ length: n }, (_, i) => ({
+    date: '2024-01-' + i,
+    o: 100 + i,
+    h: 101 + i,
+    l: 99  + i,
+    c: 100 + i,
+  }));
+  const result = calcIndicators(bars);
+  assertNotNull(result, 'result should not be null');
+  assertNotNull(result.sar, 'sar should not be null');
+  assert(
+    result.sar.trend === 'Bullish' || result.sar.trend === 'Bearish',
+    'sar.trend should be Bullish or Bearish, got: ' + result.sar.trend
+  );
+});
+
+// ============================================================
+// RENDER RESULTS
+// ============================================================
+(function renderResults() {
+  // Summary pill
+  const pill = document.getElementById('summaryPill');
+  const passed = results.pass + (results.fail === 0 && _groupRows.filter(r => !r.isGroup).length === 0
+    ? 0
+    : 0);
+  // Recount from _groupRows
+  const testRows = _groupRows.filter(r => !r.isGroup);
+  const totalPass = testRows.filter(r => r.ok).length;
+  const totalFail = testRows.filter(r => !r.ok).length;
+
+  pill.innerHTML =
+    `<span class="summary-pass">&#10003; ${totalPass} passed</span>` +
+    `<span class="summary-sep">&middot;</span>` +
+    (totalFail > 0
+      ? `<span class="summary-fail">&#10007; ${totalFail} failed</span>`
+      : `<span class="summary-pass">all tests passing</span>`);
+
+  // Results table
+  const tbody = document.getElementById('resultsBody');
+  let testNum = 0;
+  const rows = [];
+
+  for (const row of _groupRows) {
+    if (row.isGroup) {
+      rows.push(
+        `<tr class="group-header"><td colspan="4">${row.label}</td></tr>`
+      );
+    } else {
+      testNum++;
+      const statusClass = row.ok ? 'pass' : 'fail';
+      const statusIcon  = row.ok ? '&#10003;' : '&#10007;';
+      rows.push(
+        `<tr>` +
+          `<td class="td-status ${statusClass}">${statusIcon}</td>` +
+          `<td class="td-num">${testNum}</td>` +
+          `<td class="td-name">${escapeHtml(row.name)}</td>` +
+          `<td class="td-error">${row.error ? escapeHtml(row.error) : ''}</td>` +
+        `</tr>`
+      );
+    }
+  }
+
+  tbody.innerHTML = rows.join('');
+})();
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;');
+}
+</script>
+</body>
+</html>

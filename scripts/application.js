@@ -1104,7 +1104,7 @@ function rsiLabel(val) {
 function renderIndicatorRow(ticker, curPrice) {
   const ind = indicators[ticker];
   if (!ind) return `<tr class="indicators-row">
-    <td colspan="16"><div class="indicators-empty">Refresh prices to load technical indicators.</div></td>
+    <td colspan="15"><div class="indicators-empty">Refresh prices to load technical indicators.</div></td>
   </tr>`;
 
   const sarTrend = ind.sar ? ind.sar.trend : null;
@@ -1114,7 +1114,7 @@ function renderIndicatorRow(ticker, curPrice) {
   const downFractal = fractals.down;
 
   return `<tr class="indicators-row">
-    <td colspan="16">
+    <td colspan="15">
       <div class="indicators-grid">
         <div class="indicator">
           <span class="indicator-label">EMA (20)</span>
@@ -1181,7 +1181,6 @@ function renderTrancheRow(t, c, isEditing) {
     <td class="num ${colorClass(c.spyPctPnl)}">${fmtPct(c.spyPctPnl)}</td>
     <td class="num ${colorClass(c.spyAnnPctPnl)}">${fmtPct(c.spyAnnPctPnl)}</td>
     <td class="num ${colorClass(c.alpha)}">${fmtAlpha(c.alpha)}</td>
-    <td class="num osc-cell ${oscColorClass(t.ticker)}">${fmtOsc(t.ticker)}</td>
     <td>${isEditing ? `<button class="delete-btn" onclick="deleteTranche('${t.id}')" title="Remove tranche">&#10005;</button>` : ''}</td>
   </tr>`;
 }
@@ -1192,14 +1191,14 @@ function renderTable() {
   rebuildAvgCostCache();
 
   if (tranches.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="16" class="no-data">No tranches — click <strong>+ Add Tranche</strong> to get started.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15" class="no-data">No tranches — click <strong>+ Add Tranche</strong> to get started.</td></tr>';
     return;
   }
 
   const items = getFilteredSortedTranches();
 
   if (items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="16" class="no-data">No tranches match the current filter.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15" class="no-data">No tranches match the current filter.</td></tr>';
     return;
   }
 
@@ -1253,7 +1252,6 @@ function renderTable() {
           <span class="signal-badge signal-${sig.cssClass}"><i class="fa-solid ${sig.icon}"></i> ${sig.label}</span>
         </td>
         <td class="num ${colorClass(avgAlpha)}">${avgAlpha != null ? fmtAlpha(avgAlpha) : '—'}</td>
-        <td class="num osc-cell ${oscColorClass(ticker)}">${fmtOsc(ticker)}</td>
         <td>
           <button class="edit-btn ${isEditing ? 'editing' : ''}" onclick="toggleEdit('${ticker}', event)" title="${isEditing ? 'Done editing' : 'Edit tranches'}">
             ${isEditing ? '&#10003;' : '&#9998;'}
@@ -1274,7 +1272,6 @@ function renderTable() {
           <td class="num">${curPrice != null ? '$' + fmt(curPrice) : '—'}</td>
           <td colspan="8"></td>
           <td class="num ${colorClass(avgAlpha)}">${avgAlpha != null ? fmtAlpha(avgAlpha) : '—'}</td>
-          <td class="num osc-cell ${oscColorClass(ticker)}">${fmtOsc(ticker)}</td>
           <td></td>
         </tr>`;
 
