@@ -447,7 +447,7 @@ async function quickRefreshPrices() {
         else currentPrices[ticker] = price;
         perTickerTs[ticker] = new Date().toISOString();
       } catch (e) {
-        console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
+        console.error('[AlphaTracker] Fetch failed for', ticker, ':', e.message);
         if (/:\s*429\b/.test(e.message)) rateLimitTickers.push(ticker);
         else otherErrors.push(e.message);
       }
