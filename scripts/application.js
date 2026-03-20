@@ -687,6 +687,29 @@ async function fullRefresh() {
   const tickers = [...new Set(tranches.map(t => t.ticker))];
   if (!tickers.includes('SPY')) tickers.push('SPY');
 
+  // === Fast path: try snapshot to populate prices immediately ===
+  // This lets the table show real data in ~1-2s before the slow
+  // 90-day bar fetch loop begins (which is rate-limited to 5/min).
+  loadingEl.innerHTML = '<span class="spinner"></span> Fetching current prices…';
+  const snapshotPrices = await trySnapshotFetch(tickers);
+  if (snapshotPrices && Object.keys(snapshotPrices).length > 0) {
+    const ts = new Date().toISOString();
+    for (const ticker of tickers) {
+      const price = snapshotPrices[ticker];
+      if (price == null) continue;
+      if (ticker === 'SPY') spyCurrentPrice = price;
+      else currentPrices[ticker] = price;
+      perTickerTs[ticker] = ts;
+    }
+    lastPriceRefresh = new Date();
+    document.getElementById('lastRefresh').textContent =
+      'Last refresh: ' + lastPriceRefresh.toLocaleString();
+    savePriceCache();
+    renderTable();
+    renderAlerts();
+  }
+  // =============================================================
+
   const BATCH  = 5;
   const WINDOW = 61000;
   const total  = tickers.length;
@@ -700,7 +723,7 @@ async function fullRefresh() {
     const batchStart = Date.now();
 
     loadingEl.innerHTML =
-      `<span class="spinner"></span> Fetching ${done + 1}–${Math.min(done + BATCH, total)} of ${total} tickers…`;
+      `<span class="spinner"></span> Fetching history ${done + 1}–${Math.min(done + BATCH, total)} of ${total}…`;
 
     await Promise.all(batch.map(async ticker => {
       try {
@@ -711,9 +734,15 @@ async function fullRefresh() {
         }
         const latestClose = bars[bars.length - 1].c;
         if (ticker === 'SPY') {
-          spyCurrentPrice = latestClose;
+          // Only overwrite SPY price if snapshot didn't already get it
+          if (!snapshotPrices || snapshotPrices[ticker] == null) {
+            spyCurrentPrice = latestClose;
+          }
         } else {
-          currentPrices[ticker]  = latestClose;
+          // Only overwrite price if snapshot didn't already get it
+          if (!snapshotPrices || snapshotPrices[ticker] == null) {
+            currentPrices[ticker] = latestClose;
+          }
           historicalData[ticker] = bars;
           indicators[ticker]     = calcIndicators(bars);
         }
@@ -1683,6 +1712,7 @@ async function migrateShares() {
   if (needsShares.length === 0) return;
 
   for (const t of needsShares) {
+    if (t.purchasePrice == null) continue;
     const key = `${t.ticker}|${t.date}|${t.purchasePrice.toFixed(2)}`;
     const shares = SHARES_SEED[key];
     if (shares == null) continue;
@@ -1761,9 +1791,11 @@ loadTranches().then(async () => {
   await deduplicateTranches();
   await migrateShares();
 
-  if (loadPriceCache()) {
-    loadIndicatorCache();
+  // Always try to load indicators from cache — they have a 7-day TTL so may
+  // still be valid even when the 8-hour price cache has expired.
+  loadIndicatorCache();
 
+  if (loadPriceCache()) {
     const refreshEl = document.getElementById('lastRefresh');
     if (refreshEl && lastPriceRefresh) {
       refreshEl.textContent = 'Last refresh: ' + lastPriceRefresh.toLocaleString();
@@ -1781,8 +1813,13 @@ loadTranches().then(async () => {
       quickRefreshPrices();
     }
   } else {
-    // No cache yet — full refresh required
+    // No price cache — render immediately with whatever we have (may include
+    // stale indicators from cache above), then kick off a full refresh.
+    // fullRefresh() now tries the snapshot endpoint first so prices appear
+    // in ~1-2 s when the API key has snapshot access, before the slower
+    // 90-day bar loop begins.
     renderTable();
+    renderAlerts();
     fullRefresh();
   }
 });
