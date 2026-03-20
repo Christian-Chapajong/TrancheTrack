@@ -102,14 +102,11 @@ let tranches = [];
 let currentPrices = {};
 let spyCurrentPrice = null;
 let lastPriceRefresh = null;
-let lastIndicatorRefresh = null;
 let perTickerTs = {};
 let refreshLock = false;
 let nextId = 1;
 let expandedTickers = new Set();
 let editingTickers = new Set();
-let historicalData = {};
-let indicators = {};
 let accordionsInitialized = false;
 let sidebarOpen = false;
 let currentFilterTicker = '';
@@ -120,12 +117,10 @@ let compHiddenTickers = new Set(); // tickers unchecked in composite filter
 let compFilterOpen = false;
 
 // ============================================================
-// Cache (localStorage) — two-speed: prices (8h) + indicators (7d)
+// Cache (localStorage) — prices (8h)
 // ============================================================
 const PRICE_CACHE_KEY     = 'tt_price_cache';
-const INDICATOR_CACHE_KEY = 'tt_indicator_cache';
 const PRICE_TTL_MS        = 8  * 60 * 60 * 1000;        // 8 hours
-const INDICATOR_TTL_MS    = 7  * 24 * 60 * 60 * 1000;   // 7 days
 
 function savePriceCache() {
   try {
@@ -134,15 +129,6 @@ function savePriceCache() {
       spyCurrentPrice,
       lastPriceRefresh: lastPriceRefresh ? lastPriceRefresh.toISOString() : null,
       perTickerTs
-    }));
-  } catch (e) { /* storage quota — not critical */ }
-}
-
-function saveIndicatorCache() {
-  try {
-    localStorage.setItem(INDICATOR_CACHE_KEY, JSON.stringify({
-      indicators,
-      lastIndicatorRefresh: lastIndicatorRefresh ? lastIndicatorRefresh.toISOString() : null
     }));
   } catch (e) { /* storage quota — not critical */ }
 }
@@ -157,19 +143,6 @@ function loadPriceCache() {
     spyCurrentPrice  = cache.spyCurrentPrice;
     lastPriceRefresh = cache.lastPriceRefresh ? new Date(cache.lastPriceRefresh) : null;
     perTickerTs      = cache.perTickerTs       || {};
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-function loadIndicatorCache() {
-  try {
-    const raw = localStorage.getItem(INDICATOR_CACHE_KEY);
-    if (!raw) return false;
-    const cache = JSON.parse(raw);
-    indicators           = cache.indicators           || {};
-    lastIndicatorRefresh = cache.lastIndicatorRefresh ? new Date(cache.lastIndicatorRefresh) : null;
     return true;
   } catch (e) {
     return false;
@@ -339,24 +312,6 @@ async function fetchPrice(ticker) {
   return data.results[0].c;
 }
 
-async function fetchHistorical(ticker) {
-  const key = getApiKey();
-  const to = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - 90);
-  const fromStr = from.toISOString().split('T')[0];
-  const toStr = to.toISOString().split('T')[0];
-  const url = `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=120&apiKey=${key}`;
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new Error(`Historical data error for ${ticker}: ${resp.status} — ${body}`);
-  }
-  const data = await resp.json();
-  if (!data.results || data.results.length === 0) return [];
-  return data.results.map(r => ({ date: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v }));
-}
-
 // ============================================================
 // Fetch SPY close on (or nearest trading day before) a given date
 // Used to auto-fill spyAtPurchase for historical tranches.
@@ -414,139 +369,7 @@ async function fillMissingSpyPrices() {
 }
 
 // ============================================================
-// Technical Indicators
-// ============================================================
-function calcEMA(closes, period) {
-  if (closes.length < period) return null;
-  const k = 2 / (period + 1);
-  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < closes.length; i++) {
-    ema = closes[i] * k + ema * (1 - k);
-  }
-  return ema;
-}
-
-function calcRSI(closes, period) {
-  if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff; else losses -= diff;
-  }
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
-  for (let i = period + 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    avgGain = (avgGain * (period - 1) + (diff >= 0 ? diff : 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
-  }
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
-
-function calcStochastic(highs, lows, closes, kPeriod, dPeriod) {
-  if (closes.length < kPeriod) return { k: null, d: null };
-  const kValues = [];
-  for (let i = kPeriod - 1; i < closes.length; i++) {
-    const sliceH = highs.slice(i - kPeriod + 1, i + 1);
-    const sliceL = lows.slice(i - kPeriod + 1, i + 1);
-    const hh = Math.max(...sliceH);
-    const ll = Math.min(...sliceL);
-    const k = hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100;
-    kValues.push(k);
-  }
-  const latestK = kValues[kValues.length - 1];
-  let latestD = null;
-  if (kValues.length >= dPeriod) {
-    latestD = kValues.slice(-dPeriod).reduce((a, b) => a + b, 0) / dPeriod;
-  }
-  return { k: latestK, d: latestD };
-}
-
-function calcParabolicSAR(highs, lows, closes) {
-  if (closes.length < 5) return null;
-  const af0 = 0.02, afMax = 0.20;
-  let bull = true;
-  let sar = lows[0];
-  let ep = highs[0];
-  let af = af0;
-
-  for (let i = 1; i < closes.length; i++) {
-    const prevSar = sar;
-    sar = prevSar + af * (ep - prevSar);
-
-    if (bull) {
-      sar = Math.min(sar, lows[Math.max(0, i - 1)], lows[Math.max(0, i - 2)]);
-      if (lows[i] < sar) {
-        bull = false;
-        sar = ep;
-        ep = lows[i];
-        af = af0;
-      } else {
-        if (highs[i] > ep) {
-          ep = highs[i];
-          af = Math.min(af + af0, afMax);
-        }
-      }
-    } else {
-      sar = Math.max(sar, highs[Math.max(0, i - 1)], highs[Math.max(0, i - 2)]);
-      if (highs[i] > sar) {
-        bull = true;
-        sar = ep;
-        ep = highs[i];
-        af = af0;
-      } else {
-        if (lows[i] < ep) {
-          ep = lows[i];
-          af = Math.min(af + af0, afMax);
-        }
-      }
-    }
-  }
-  return { value: sar, trend: bull ? 'Bullish' : 'Bearish' };
-}
-
-function calcFractals(highs, lows) {
-  if (!highs || !lows || highs.length < 5 || lows.length < 5) {
-    return { up: null, down: null };
-  }
-  let upIndex = null;
-  let downIndex = null;
-
-  for (let i = 2; i < highs.length - 2; i++) {
-    if (highs[i] > highs[i-1] && highs[i] > highs[i-2] && highs[i] > highs[i+1] && highs[i] > highs[i+2]) {
-      upIndex = i;
-    }
-    if (lows[i] < lows[i-1] && lows[i] < lows[i-2] && lows[i] < lows[i+1] && lows[i] < lows[i+2]) {
-      downIndex = i;
-    }
-  }
-
-  return {
-    up: upIndex != null ? { index: upIndex, price: highs[upIndex] } : null,
-    down: downIndex != null ? { index: downIndex, price: lows[downIndex] } : null
-  };
-}
-
-function calcIndicators(bars) {
-  if (!bars || bars.length < 14) return null;
-  const closes = bars.map(b => b.c);
-  const highs = bars.map(b => b.h);
-  const lows = bars.map(b => b.l);
-
-  return {
-    ema20: calcEMA(closes, 20),
-    rsi14: calcRSI(closes, 14),
-    stochK: calcStochastic(highs, lows, closes, 14, 3).k,
-    stochD: calcStochastic(highs, lows, closes, 14, 3).d,
-    sar: calcParabolicSAR(highs, lows, closes),
-    fractals: calcFractals(highs, lows)
-  };
-}
-
-// ============================================================
-// Refresh prices + historical data
+// Refresh prices
 // ============================================================
 
 // Quick refresh — prices only, skips if cache is fresh or market is closed
@@ -671,137 +494,6 @@ async function quickRefreshPrices() {
 
   renderTable();
   renderAlerts();
-}
-
-// Full refresh — fetches 90-day bars and recomputes all indicators
-async function fullRefresh() {
-  if (refreshLock) return;
-  refreshLock = true;
-
-  const btn       = document.getElementById('fullRefreshBtn');
-  const loadingEl = document.getElementById('loadingMsg');
-
-  btn.disabled    = true;
-  btn.textContent = 'Loading…';
-
-  const tickers = [...new Set(tranches.map(t => t.ticker))];
-  if (!tickers.includes('SPY')) tickers.push('SPY');
-
-  // === Fast path: try snapshot to populate prices immediately ===
-  // This lets the table show real data in ~1-2s before the slow
-  // 90-day bar fetch loop begins (which is rate-limited to 5/min).
-  loadingEl.innerHTML = '<span class="spinner"></span> Fetching current prices…';
-  const snapshotPrices = await trySnapshotFetch(tickers);
-  if (snapshotPrices && Object.keys(snapshotPrices).length > 0) {
-    const ts = new Date().toISOString();
-    for (const ticker of tickers) {
-      const price = snapshotPrices[ticker];
-      if (price == null) continue;
-      if (ticker === 'SPY') spyCurrentPrice = price;
-      else currentPrices[ticker] = price;
-      perTickerTs[ticker] = ts;
-    }
-    lastPriceRefresh = new Date();
-    document.getElementById('lastRefresh').textContent =
-      'Last refresh: ' + lastPriceRefresh.toLocaleString();
-    savePriceCache();
-    renderTable();
-    renderAlerts();
-  }
-  // =============================================================
-
-  const BATCH  = 5;
-  const WINDOW = 61000;
-  const total  = tickers.length;
-  let   done   = 0;
-
-  const rateLimitTickers = [];
-  const otherErrors      = [];
-
-  for (let i = 0; i < total; i += BATCH) {
-    const batch      = tickers.slice(i, i + BATCH);
-    const batchStart = Date.now();
-
-    loadingEl.innerHTML =
-      `<span class="spinner"></span> Fetching history ${done + 1}–${Math.min(done + BATCH, total)} of ${total}…`;
-
-    await Promise.all(batch.map(async ticker => {
-      try {
-        const bars = await fetchHistorical(ticker);
-        if (bars.length === 0) {
-          otherErrors.push(`No price data returned for ${ticker}`);
-          return;
-        }
-        const latestClose = bars[bars.length - 1].c;
-        if (ticker === 'SPY') {
-          // Only overwrite SPY price if snapshot didn't already get it
-          if (!snapshotPrices || snapshotPrices[ticker] == null) {
-            spyCurrentPrice = latestClose;
-          }
-        } else {
-          // Only overwrite price if snapshot didn't already get it
-          if (!snapshotPrices || snapshotPrices[ticker] == null) {
-            currentPrices[ticker] = latestClose;
-          }
-          historicalData[ticker] = bars;
-          indicators[ticker]     = calcIndicators(bars);
-        }
-        perTickerTs[ticker] = new Date().toISOString();
-      } catch (e) {
-        console.error('[TrancheTrack] Fetch failed for', ticker, ':', e.message);
-        if (/:\s*429\b/.test(e.message)) rateLimitTickers.push(ticker);
-        else                             otherErrors.push(e.message);
-      }
-    }));
-
-    done += batch.length;
-
-    if (spyCurrentPrice !== null) renderTable();
-
-    if (done < total) {
-      const wait = WINDOW - (Date.now() - batchStart);
-      if (wait > 0) {
-        const until = Date.now() + wait;
-        await new Promise(resolve => {
-          const tick = setInterval(() => {
-            const secs = Math.ceil((until - Date.now()) / 1000);
-            loadingEl.innerHTML =
-              `<span class="spinner"></span> Rate limit — next batch in ${secs}s &nbsp;(${done} / ${total} done)`;
-            if (Date.now() >= until) { clearInterval(tick); resolve(); }
-          }, 500);
-        });
-      }
-    }
-  }
-
-  loadingEl.innerHTML = '';
-  btn.disabled        = false;
-  btn.textContent     = 'Full Refresh';
-  refreshLock         = false;
-
-  if (rateLimitTickers.length > 0) {
-    showToast(
-      `Rate limit (429) hit for: ${rateLimitTickers.join(', ')}. ` +
-      `Some prices may be missing — try refreshing again.`,
-      'error', 12000
-    );
-  }
-  for (const msg of otherErrors) showToast(msg, 'error');
-
-  if (spyCurrentPrice !== null) {
-    lastPriceRefresh = new Date();
-    lastIndicatorRefresh = new Date();
-    document.getElementById('lastRefresh').textContent =
-      'Last refresh: ' + lastPriceRefresh.toLocaleString();
-    const indEl = document.getElementById('lastIndicatorRefresh');
-    if (indEl) indEl.textContent = 'Indicators: ' + lastIndicatorRefresh.toLocaleString();
-    savePriceCache();
-    saveIndicatorCache();
-  }
-
-  renderTable();
-  renderAlerts();
-  fillMissingSpyPrices();
 }
 
 // ============================================================
@@ -991,10 +683,7 @@ function rebuildAvgCostCache() {
   for (const ticker in grouped) {
     const arr = grouped[ticker].filter(t => t.purchasePrice != null);
     if (arr.length === 0) continue;
-    // Dollar-weighted avg cost: Σ(price × shares) / Σ(shares)
-    // Tranches without shares fall back to weight 1 (equal weighting)
-    const totalWeight = arr.reduce((s, t) => s + (t.shares != null ? t.shares : 1), 0);
-    avgCostCache[ticker] = arr.reduce((s, t) => s + t.purchasePrice * (t.shares != null ? t.shares : 1), 0) / totalWeight;
+    avgCostCache[ticker] = arr.reduce((s, t) => s + t.purchasePrice, 0) / arr.length;
   }
 }
 
@@ -1035,34 +724,15 @@ function calcCompositeScore(ticker) {
   const cfg = alertConfig[ticker] || { addPct: -0.20, trimPct: 0.40 };
   let score = 0;
 
-  // Oscillator contribution (±2)
   if (osc != null) {
-    if (osc <= cfg.addPct) score += 2;       // Buy zone → bullish
-    else if (osc >= cfg.trimPct) score -= 2; // Trim zone → bearish
-    // Hold zone → 0
-  }
-
-  // Technical indicator contributions (±1 each)
-  const ind = indicators[ticker];
-  if (ind) {
-    if (ind.rsi14 != null) {
-      if (ind.rsi14 >= 70) score -= 1;      // Overbought
-      else if (ind.rsi14 <= 30) score += 1; // Oversold
-    }
-    if (ind.stochK != null) {
-      if (ind.stochK >= 80) score -= 1;      // Overbought
-      else if (ind.stochK <= 20) score += 1; // Oversold
-    }
-    if (ind.sar && ind.sar.trend === 'Bearish') score -= 1;
-    if (ind.ema20 != null && currentPrices[ticker] != null && currentPrices[ticker] < ind.ema20) score -= 1;
+    if (osc <= cfg.addPct) score += 2;
+    else if (osc >= cfg.trimPct) score -= 2;
   }
 
   let label, cssClass, icon;
-  if (score >= 3)       { label = 'Strong Buy';  cssClass = 'strong-buy';  icon = 'fa-arrow-up';             }
-  else if (score >= 1)  { label = 'Buy';          cssClass = 'buy';         icon = 'fa-arrow-up';             }
-  else if (score === 0) { label = 'Hold';          cssClass = 'hold';        icon = 'fa-pause';                }
-  else if (score >= -2) { label = 'Sell';          cssClass = 'sell';        icon = 'fa-circle-exclamation';   }
-  else                  { label = 'Strong Sell';  cssClass = 'strong-sell'; icon = 'fa-circle-exclamation';   }
+  if (score >= 2)       { label = 'Buy';   cssClass = 'buy';  icon = 'fa-arrow-up';           }
+  else if (score === 0) { label = 'Hold';  cssClass = 'hold'; icon = 'fa-pause';              }
+  else                  { label = 'Sell';  cssClass = 'sell'; icon = 'fa-circle-exclamation'; }
 
   return { score, label, cssClass, icon };
 }
@@ -1087,68 +757,6 @@ function toggleEdit(ticker, event) {
   renderTable();
 }
 
-function rsiClass(val) {
-  if (val == null) return '';
-  if (val >= 70) return 'negative';
-  if (val <= 30) return 'positive';
-  return '';
-}
-
-function rsiLabel(val) {
-  if (val == null) return '';
-  if (val >= 70) return 'Overbought';
-  if (val <= 30) return 'Oversold';
-  return 'Neutral';
-}
-
-function renderIndicatorRow(ticker, curPrice) {
-  const ind = indicators[ticker];
-  if (!ind) return `<tr class="indicators-row">
-    <td colspan="15"><div class="indicators-empty">Refresh prices to load technical indicators.</div></td>
-  </tr>`;
-
-  const sarTrend = ind.sar ? ind.sar.trend : null;
-  const sarVal = ind.sar ? ind.sar.value : null;
-  const fractals = ind.fractals || {};
-  const upFractal = fractals.up;
-  const downFractal = fractals.down;
-
-  return `<tr class="indicators-row">
-    <td colspan="15">
-      <div class="indicators-grid">
-        <div class="indicator">
-          <span class="indicator-label">EMA (20)</span>
-          <span class="indicator-value">${ind.ema20 != null ? '$' + fmt(ind.ema20) : '—'}</span>
-          ${ind.ema20 != null && curPrice != null ? `<span class="indicator-note ${curPrice > ind.ema20 ? 'positive' : 'negative'}">${curPrice > ind.ema20 ? 'Above' : 'Below'}</span>` : ''}
-        </div>
-        <div class="indicator">
-          <span class="indicator-label">RSI (14)</span>
-          <span class="indicator-value ${rsiClass(ind.rsi14)}">${ind.rsi14 != null ? fmt(ind.rsi14, 1) : '—'}</span>
-          ${ind.rsi14 != null ? `<span class="indicator-note ${rsiClass(ind.rsi14)}">${rsiLabel(ind.rsi14)}</span>` : ''}
-        </div>
-        <div class="indicator">
-          <span class="indicator-label">Stoch %K / %D</span>
-          <span class="indicator-value">${ind.stochK != null ? fmt(ind.stochK, 1) : '—'} / ${ind.stochD != null ? fmt(ind.stochD, 1) : '—'}</span>
-          ${ind.stochK != null ? `<span class="indicator-note ${ind.stochK >= 80 ? 'negative' : ind.stochK <= 20 ? 'positive' : ''}">${ind.stochK >= 80 ? 'Overbought' : ind.stochK <= 20 ? 'Oversold' : 'Neutral'}</span>` : ''}
-        </div>
-        <div class="indicator">
-          <span class="indicator-label">Parabolic SAR</span>
-          <span class="indicator-value">${sarVal != null ? '$' + fmt(sarVal) : '—'}</span>
-          ${sarTrend ? `<span class="indicator-note ${sarTrend === 'Bullish' ? 'positive' : 'negative'}">${sarTrend}</span>` : ''}
-        </div>
-        <div class="indicator">
-          <span class="indicator-label">Fractals</span>
-          <span class="indicator-value">
-            ${upFractal ? '&#9650; $' + fmt(upFractal.price) : '&#9650; —'}
-            &nbsp;
-            ${downFractal ? '&#9660; $' + fmt(downFractal.price) : '&#9660; —'}
-          </span>
-        </div>
-      </div>
-    </td>
-  </tr>`;
-}
-
 function renderTrancheRow(t, c, isEditing) {
   const priceCell = isEditing
     ? `<input class="inline-input" type="number" step="0.01" value="${t.purchasePrice ?? ''}" placeholder="?" onchange="updateTranche('${t.id}','purchasePrice',this.value)">`
@@ -1162,15 +770,10 @@ function renderTrancheRow(t, c, isEditing) {
     ? `<input class="inline-input inline-input-date" type="text" value="${fmtDate(t.date)}" onchange="updateTrancheDate('${t.id}',this.value)" placeholder="MM/DD/YYYY">`
     : fmtDate(t.date);
 
-  const sharesCell = isEditing
-    ? `<input class="inline-input" type="number" step="0.001" value="${t.shares != null ? t.shares : ''}" placeholder="—" onchange="updateTranche('${t.id}','shares',this.value)">`
-    : (t.shares != null ? fmt(t.shares, 3).replace(/\.?0+$/, '') : '&mdash;');
-
   return `<tr class="tranche-row">
     <td>${t.ticker}</td>
     <td>${dateCell}</td>
     <td class="num">${priceCell}</td>
-    <td class="num shares-cell">${sharesCell}</td>
     <td class="num">${c.currentPrice != null ? '$' + fmt(c.currentPrice) : '—'}</td>
     <td class="num">${c.days}</td>
     <td class="num ${colorClass(c.pnl)}">${c.pnl != null ? '$' + fmt(c.pnl) : '—'}</td>
@@ -1191,14 +794,14 @@ function renderTable() {
   rebuildAvgCostCache();
 
   if (tranches.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="15" class="no-data">No tranches — click <strong>+ Add Tranche</strong> to get started.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" class="no-data">No tranches — click <strong>+ Add Tranche</strong> to get started.</td></tr>';
     return;
   }
 
   const items = getFilteredSortedTranches();
 
   if (items.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="15" class="no-data">No tranches match the current filter.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" class="no-data">No tranches match the current filter.</td></tr>';
     return;
   }
 
@@ -1245,7 +848,7 @@ function renderTable() {
       const chevron = isExpanded ? '&#9660;' : '&#9654;';
       const sig = calcCompositeScore(ticker);
       html += `<tr class="group-header" onclick="toggleAccordion('${ticker}')">
-        <td colspan="13">
+        <td colspan="12">
           <span class="accordion-chevron">${chevron}</span>
           <span class="accordion-ticker">${ticker}</span>
           <span class="accordion-meta">${n} tranche${n > 1 ? 's' : ''} · Avg: ${avgCost != null ? '$' + fmt(avgCost) : '—'} · Current: ${curPrice != null ? '$' + fmt(curPrice) : '—'}</span>
@@ -1268,15 +871,12 @@ function renderTable() {
         html += `<tr class="summary-row">
           <td colspan="2">${ticker} Summary</td>
           <td class="num">${avgCost != null ? 'Avg: $' + fmt(avgCost) : '—'}</td>
-          <td></td>
           <td class="num">${curPrice != null ? '$' + fmt(curPrice) : '—'}</td>
           <td colspan="8"></td>
           <td class="num ${colorClass(avgAlpha)}">${avgAlpha != null ? fmtAlpha(avgAlpha) : '—'}</td>
           <td></td>
         </tr>`;
 
-        // Indicators row
-        html += renderIndicatorRow(ticker, curPrice);
       }
     }
 
@@ -1348,7 +948,6 @@ function renderAlerts() {
   const buyAlerts = [];
   const sellAlerts = [];
   const holdAlerts = [];
-  const indicatorAlerts = [];
 
   for (const ticker of alertTickers) {
     const price = currentPrices[ticker];
@@ -1368,25 +967,6 @@ function renderAlerts() {
       holdAlerts.push({ ticker, price, avgCost, pctStr, gauge, isMRK: ticker === 'MRK' });
     }
 
-    const ind = indicators[ticker];
-    if (ind) {
-      if (ind.rsi14 != null && ind.rsi14 >= 70) {
-        indicatorAlerts.push({ ticker, type: 'caution', msg: `RSI at ${fmt(ind.rsi14, 1)} — Overbought` });
-      } else if (ind.rsi14 != null && ind.rsi14 <= 30) {
-        indicatorAlerts.push({ ticker, type: 'opportunity', msg: `RSI at ${fmt(ind.rsi14, 1)} — Oversold` });
-      }
-      if (ind.stochK != null && ind.stochK >= 80) {
-        indicatorAlerts.push({ ticker, type: 'caution', msg: `Stoch %K at ${fmt(ind.stochK, 1)} — Overbought` });
-      } else if (ind.stochK != null && ind.stochK <= 20) {
-        indicatorAlerts.push({ ticker, type: 'opportunity', msg: `Stoch %K at ${fmt(ind.stochK, 1)} — Oversold` });
-      }
-      if (ind.sar && ind.sar.trend === 'Bearish') {
-        indicatorAlerts.push({ ticker, type: 'caution', msg: `SAR trend is Bearish` });
-      }
-      if (ind.ema20 != null && currentPrices[ticker] != null && currentPrices[ticker] < ind.ema20) {
-        indicatorAlerts.push({ ticker, type: 'caution', msg: `Price below EMA(20): $${fmt(currentPrices[ticker])} < $${fmt(ind.ema20)}` });
-      }
-    }
   }
 
   // Composite scores ranked
@@ -1401,7 +981,6 @@ function renderAlerts() {
     { id: 'buy',       label: 'Buy',         count: buyAlerts.length   },
     { id: 'sell',      label: 'Sell',        count: sellAlerts.length  },
     { id: 'hold',      label: 'Hold',        count: holdAlerts.length  },
-    { id: 'technical', label: 'Technical',   count: indicatorAlerts.length },
   ];
   tabsEl.innerHTML = tabDefs.map(t =>
     `<button class="sidebar-tab${activeAlertTab === t.id ? ' active' : ''}" onclick="setAlertTab('${t.id}')">
@@ -1507,23 +1086,12 @@ function renderAlerts() {
       </div>`;
     }
 
-  } else if (activeAlertTab === 'technical') {
-    if (indicatorAlerts.length === 0) {
-      html = '<div class="sidebar-empty">No technical signals triggered.</div>';
-    }
-    for (const a of indicatorAlerts) {
-      const cls = a.type === 'caution' ? 'alert-indicator-caution' : 'alert-indicator-opportunity';
-      html += `<div class="alert ${cls}">
-        <div class="alert-main"><strong>${a.ticker}</strong></div>
-        <div class="alert-detail">${a.msg}</div>
-      </div>`;
-    }
   }
 
   container.innerHTML = html;
 
   // Update badge on alerts button
-  const totalActionable = buyAlerts.length + sellAlerts.length + indicatorAlerts.length;
+  const totalActionable = buyAlerts.length + sellAlerts.length;
   const btn = document.getElementById('alertsBtn');
   if (totalActionable > 0) {
     btn.textContent = `Alerts (${totalActionable})`;
@@ -1543,7 +1111,6 @@ function openAddTranche() {
   document.getElementById('inputDate').value = '';
   document.getElementById('inputPrice').value = '';
   document.getElementById('inputSpyPrice').value = '';
-  document.getElementById('inputShares').value = '';
 }
 
 function closeAddTranche() {
@@ -1571,11 +1138,8 @@ async function addTranche() {
     return;
   }
 
-  const sharesRaw = parseFloat(document.getElementById('inputShares').value);
-  const shares = isNaN(sharesRaw) || sharesRaw <= 0 ? null : sharesRaw;
-
   const portfolioVal = (document.getElementById('inputPortfolio') || {}).value || 'Main';
-  const trancheData = { ticker, date, purchasePrice: price, spyAtPurchase: spyPrice, portfolio: portfolioVal, ...(shares != null && { shares }) };
+  const trancheData = { ticker, date, purchasePrice: price, spyAtPurchase: spyPrice, portfolio: portfolioVal };
 
   // Block exact duplicates (same ticker + date + purchase price)
   if (tranches.some(t => trancheKey(t) === trancheKey(trancheData))) {
@@ -1628,22 +1192,11 @@ async function updateTranche(id, field, value) {
   const t = tranches.find(t => String(t.id) === String(id));
   if (!t) return;
 
-  // Shares can be cleared (empty string → null)
-  let stored;
-  if (field === 'shares') {
-    const num = parseFloat(value);
-    stored = (!value || isNaN(num) || num <= 0) ? null : num;
-  } else {
-    const num = parseFloat(value);
-    if (isNaN(num) || num < 0) return;
-    stored = num;
-  }
+  const num = parseFloat(value);
+  if (isNaN(num) || num < 0) return;
+  const stored = num;
 
-  if (stored === null) {
-    delete t[field];
-  } else {
-    t[field] = stored;
-  }
+  t[field] = stored;
 
   if (useFirestore) {
     try {
@@ -1686,48 +1239,6 @@ async function updateTrancheDate(id, value) {
 
   renderTable();
   renderAlerts();
-}
-
-// ============================================================
-// Migrate shares — backfill existing records that are missing share counts.
-// Keyed by "ticker|date|price" so it never touches new tranches added later.
-// ============================================================
-const SHARES_SEED = {
-  'DIA|2020-07-21|269.60':  100,
-  'GLD|2022-07-18|159.34':   50,
-  'GLD|2025-10-13|376.73':   25,
-  'SLV|2022-07-18|17.32':   500,
-  'MRK|2005-07-26|29.81':   200,
-  'MRK|2009-01-14|26.40':   300,
-  'MRK|2025-05-27|77.12':   100,
-  'MRK|2025-09-02|85.24':    75,
-  'MRK|2025-12-01|105.08':   50,
-};
-
-async function migrateShares() {
-  const needsShares = tranches.filter(t => t.shares == null);
-  if (needsShares.length === 0) return;
-
-  for (const t of needsShares) {
-    if (t.purchasePrice == null) continue;
-    const key = `${t.ticker}|${t.date}|${t.purchasePrice.toFixed(2)}`;
-    const shares = SHARES_SEED[key];
-    if (shares == null) continue;
-
-    t.shares = shares;
-
-    if (useFirestore) {
-      try {
-        await db.collection('tranches').doc(String(t.id)).update({ shares });
-      } catch (e) {
-        console.warn('migrateShares: could not update', t.id, e.message);
-      }
-    }
-  }
-
-  if (!useFirestore) {
-    saveToLocalStorage();
-  }
 }
 
 // ============================================================
@@ -1786,37 +1297,23 @@ document.addEventListener('click', function(e) {
 // ============================================================
 loadTranches().then(async () => {
   await deduplicateTranches();
-  await migrateShares();
-
-  // Always try to load indicators from cache — they have a 7-day TTL so may
-  // still be valid even when the 8-hour price cache has expired.
-  loadIndicatorCache();
 
   if (loadPriceCache()) {
     const refreshEl = document.getElementById('lastRefresh');
     if (refreshEl && lastPriceRefresh) {
       refreshEl.textContent = 'Last refresh: ' + lastPriceRefresh.toLocaleString();
     }
-    const indEl = document.getElementById('lastIndicatorRefresh');
-    if (indEl && lastIndicatorRefresh) {
-      indEl.textContent = 'Indicators: ' + lastIndicatorRefresh.toLocaleString();
-    }
 
     renderTable();
     renderAlerts();
 
-    // Auto-refresh prices if stale
     if (!isPriceCacheFresh()) {
       quickRefreshPrices();
     }
   } else {
-    // No price cache — render immediately with whatever we have (may include
-    // stale indicators from cache above), then kick off a full refresh.
-    // fullRefresh() now tries the snapshot endpoint first so prices appear
-    // in ~1-2 s when the API key has snapshot access, before the slower
-    // 90-day bar loop begins.
     renderTable();
-    renderAlerts();
-    fullRefresh();
+    quickRefreshPrices();
   }
+
+  fillMissingSpyPrices();
 });
